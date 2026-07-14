@@ -1,0 +1,1784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Workbook Complexity Scorer — CBRE BIC Migration</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<!--
+  CBRE BIC Workbook Complexity Scorer — v2.3
+  ============================================
+  Standalone HTML — no server, no login, no data leaves the browser.
+  Post to SharePoint and open in any browser.
+
+  Scoring model:
+    Lease Admin / Portfolio Intelligence: calibrated from 17 labeled workbooks.
+    Facilities Management: calibrated from 17 labeled workbooks.
+    BIC whitelists: 978 fields (LA) + 1042 fields (FM) + 755 fields (Finance).
+    Tableau system fields (_ROWNUM_, _CHILDIDS_, etc.) filtered automatically.
+    Fields scored = intersection of data-source fields AND fields used in visualizations.
+    Fields in the DB connection but not on any dashboard do not affect the score.
+    Curve exponent: 0.45 (both SLs, regression-optimized).
+
+  Storage: localStorage (per-browser). BIC standard is pre-loaded — no upload needed.
+
+  To add a new service line after calibration:
+    1. Add entry to SLS object with calibrated weights + exponent
+    2. Add BIC content areas, structural tabs, and field variants
+    3. Re-post the updated file to SharePoint
+
+  Dependencies (CDN — requires internet on first load, cached after):
+    JSZip 3.10.1 — cdnjs.cloudflare.com
+    Google Fonts (Syne, DM Mono) — fonts.googleapis.com
+-->
+<style>
+:root {
+  --bg: #ffffff;
+  --bg2: #f8f9fa;
+  --bg3: #f0f2f4;
+  --border: #e2e6ea;
+  --text: #1a1f2e;
+  --muted: #6b7280;
+  --accent: #00B388;
+  --accent2: #003F2D;
+  --warn: #d97706;
+  --danger: #dc2626;
+  --success: #059669;
+  --fh: 'Syne', system-ui, sans-serif;
+  --fm: 'DM Mono', 'Courier New', monospace;
+  --fb: system-ui, -apple-system, sans-serif;
+  --r: 6px;
+  --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1117; --bg2: #1a1f2e; --bg3: #242938;
+    --border: #2d3348; --text: #f1f3f5; --muted: #8892a4;
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--fb); background: var(--bg); color: var(--text); min-height: 100vh; }
+.container { max-width: 820px; margin: 0 auto; padding: 0 20px 60px; }
+
+/* Header */
+.hdr { display: flex; align-items: center; justify-content: space-between; padding: 20px 0 16px; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+.hdr-l { display: flex; align-items: center; gap: 12px; }
+.logo { width: 34px; height: 34px; background: var(--accent2); border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.logo svg { width: 18px; height: 18px; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.app-title { font-family: var(--fh); font-size: 15px; font-weight: 700; color: var(--text); }
+.app-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.version-badge { font-size: 10px; font-weight: 600; font-family: var(--fm); padding: 3px 8px; border-radius: 100px; background: color-mix(in srgb, var(--accent) 12%, var(--bg)); color: var(--accent2); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
+
+/* Tabs */
+.tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 20px; gap: 0; }
+.tab { padding: 8px 18px; font-size: 12px; font-weight: 600; font-family: var(--fh); color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: all .15s; letter-spacing: .02em; }
+.tab.active { color: var(--text); border-bottom-color: var(--accent2); }
+.tab:hover:not(.active) { color: var(--text); }
+.panel { display: none; } .panel.active { display: block; }
+
+/* Drop zones */
+.dz { border: 1.5px dashed var(--border); border-radius: var(--r); padding: 20px; text-align: center; cursor: pointer; background: var(--bg2); transition: all .15s; }
+.dz:hover, .dz.over { background: color-mix(in srgb, var(--accent) 6%, var(--bg)); border-color: var(--accent); border-style: solid; }
+.dz.done { border-style: solid; border-color: var(--success); background: color-mix(in srgb, var(--success) 6%, var(--bg)); }
+.di { font-size: 22px; color: var(--muted); margin-bottom: 6px; }
+.dl { font-size: 12px; color: var(--muted); }
+.dd { font-size: 12px; font-weight: 500; color: var(--success); font-family: var(--fm); }
+
+/* Form elements */
+select, input[type=text] { width: 100%; padding: 9px 12px; border-radius: var(--r); border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; font-family: var(--fb); transition: border-color .15s; }
+select:focus, input[type=text]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+
+/* Buttons */
+.btn { padding: 8px 16px; border-radius: var(--r); border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer; font-family: var(--fh); transition: all .15s; letter-spacing: .02em; }
+.btn:hover { background: var(--bg2); }
+.btn-p { background: var(--accent2); color: #fff; border-color: transparent; width: 100%; padding: 11px; font-size: 13px; box-shadow: var(--shadow); }
+.btn-p:hover { opacity: .9; }
+.btn-p:disabled { opacity: .35; cursor: not-allowed; }
+.btn-sm { padding: 5px 10px; font-size: 11px; }
+.btn-d { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
+.btn-d:hover { background: color-mix(in srgb, var(--danger) 6%, var(--bg)); }
+
+/* Layout helpers */
+.lbl { font-size: 10px; font-weight: 700; font-family: var(--fh); color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; }
+.sec { margin-bottom: 16px; }
+.r2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.r3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+
+/* Notices */
+.ntc { font-size: 12px; color: var(--muted); background: var(--bg2); border-radius: var(--r); padding: 10px 13px; margin-bottom: 14px; border-left: 3px solid var(--border); line-height: 1.5; }
+.ntc.err { border-left-color: var(--danger); background: color-mix(in srgb, var(--danger) 5%, var(--bg2)); color: var(--text); }
+.ntc.ok  { border-left-color: var(--success); background: color-mix(in srgb, var(--success) 5%, var(--bg2)); }
+.ntc.warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 5%, var(--bg2)); }
+.ntc a { color: var(--accent2); text-decoration: underline; cursor: pointer; }
+
+/* Service line grid */
+.slg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.slc { border: 1px solid var(--border); border-radius: var(--r); padding: 11px 12px; cursor: pointer; transition: all .15s; background: var(--bg); position: relative; }
+.slc:hover:not(.lk) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 4%, var(--bg)); }
+.slc.sel { border-color: var(--accent2); background: color-mix(in srgb, var(--accent) 7%, var(--bg)); }
+.slc.lk { opacity: .4; cursor: not-allowed; }
+.sln { font-family: var(--fh); font-size: 12px; font-weight: 600; padding-right: 60px; }
+.sld { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: var(--fm); line-height: 1.4; }
+.slb { font-size: 9px; font-weight: 700; font-family: var(--fm); padding: 2px 7px; border-radius: 100px; position: absolute; top: 9px; right: 10px; }
+.slb.tr { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+.slb.gn { background: color-mix(in srgb, var(--muted) 15%, transparent); color: var(--muted); }
+.slb.sn { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+
+/* Standards list */
+.stdc { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r); padding: 11px 14px; margin-bottom: 8px; box-shadow: var(--shadow); }
+.stdn { font-size: 13px; font-weight: 600; font-family: var(--fh); }
+.stdm { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: var(--fm); }
+.std-sl { font-size: 10px; font-weight: 600; font-family: var(--fm); padding: 2px 8px; border-radius: 100px; margin-top: 6px; display: inline-block; }
+.es { text-align: center; padding: 2.5rem; color: var(--muted); font-size: 12px; border: 1px dashed var(--border); border-radius: var(--r); }
+
+/* Score card */
+.sw { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg); box-shadow: var(--shadow); }
+.score-top { padding: 18px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.score-l { display: flex; align-items: center; gap: 16px; }
+.score-badge { width: 76px; height: 76px; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; flex-shrink: 0; font-family: var(--fh); }
+.score-num { font-size: 32px; font-weight: 800; line-height: 1; }
+.score-denom { font-size: 12px; opacity: .65; margin-top: 2px; }
+.score-verdict { font-family: var(--fh); font-size: 15px; font-weight: 700; margin-bottom: 3px; }
+.score-sub { font-size: 12px; color: var(--muted); }
+.score-meta { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: var(--fm); }
+.band-chip { display: inline-block; font-size: 10px; font-weight: 700; font-family: var(--fm); padding: 3px 9px; border-radius: 100px; margin-left: 7px; letter-spacing: .03em; }
+.score-body { padding: 18px 20px; }
+
+/* Signal bars */
+.sig-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+.sig-name { font-size: 11px; color: var(--muted); width: 155px; flex-shrink: 0; font-family: var(--fm); }
+.sig-track { flex: 1; height: 6px; background: var(--bg2); border-radius: 3px; overflow: hidden; border: 1px solid var(--border); }
+.sig-fill { height: 100%; border-radius: 3px; transition: width .6s cubic-bezier(.4,0,.2,1); }
+.sig-val { font-size: 11px; font-weight: 600; width: 44px; text-align: right; font-family: var(--fm); }
+
+/* Stats grid */
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 16px 0; }
+.stat { background: var(--bg2); border-radius: var(--r); padding: 11px 13px; border: 1px solid var(--border); }
+.stat-k { font-size: 10px; color: var(--muted); font-family: var(--fm); margin-bottom: 4px; }
+.stat-v { font-size: 17px; font-weight: 700; font-family: var(--fh); }
+
+/* Findings */
+.fg { border-top: 1px solid var(--border); }
+.fh { display: flex; align-items: center; gap: 8px; padding: 10px 0; user-select: none; }
+.fh.cl { cursor: pointer; } .fh.cl:hover .ft { color: var(--text); }
+.fdot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.ft { font-size: 12px; color: var(--muted); flex: 1; }
+.fchev { font-size: 14px; color: var(--muted); transition: transform .2s; flex-shrink: 0; }
+.fb { display: none; padding: 0 0 12px 15px; } .fb.op { display: block; }
+.fnote { font-size: 11px; color: var(--muted); margin-bottom: 7px; font-family: var(--fm); }
+.pills { display: flex; flex-wrap: wrap; gap: 5px; }
+.pill { font-size: 11px; padding: 2px 9px; border-radius: 4px; font-family: var(--fm); border: 1px solid var(--border); background: var(--bg2); color: var(--muted); }
+.pill.r { background: color-mix(in srgb, var(--danger) 8%, var(--bg)); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 25%, transparent); }
+.pill.a { background: color-mix(in srgb, var(--warn) 8%, var(--bg)); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 25%, transparent); }
+
+/* Dashboard table */
+.dt { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 7px; }
+.dt th { padding: 5px 10px; text-align: left; color: var(--muted); font-weight: 600; background: var(--bg2); border-bottom: 1px solid var(--border); font-family: var(--fm); }
+.dt td { padding: 5px 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-family: var(--fm); }
+.dt tr:last-child td { border-bottom: none; }
+.dt td:first-child { color: var(--text); font-weight: 500; }
+.btg { font-size: 9px; padding: 1px 5px; border-radius: 3px; background: color-mix(in srgb, var(--success) 12%, var(--bg)); color: var(--success); margin-left: 5px; font-family: var(--fm); }
+.ctg { font-size: 9px; padding: 1px 5px; border-radius: 3px; background: color-mix(in srgb, var(--warn) 12%, var(--bg)); color: var(--warn); margin-left: 5px; font-family: var(--fm); }
+
+/* Export / CSV */
+.exp-btn { background: color-mix(in srgb, var(--accent) 10%, var(--bg)); color: var(--accent2); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); padding: 7px 14px; font-size: 11px; font-weight: 600; border-radius: var(--r); cursor: pointer; font-family: var(--fh); transition: all .15s; }
+.exp-btn:hover { background: color-mix(in srgb, var(--accent) 18%, var(--bg)); }
+.exp-btn.copied { background: color-mix(in srgb, var(--success) 12%, var(--bg)); color: var(--success); border-color: var(--success); }
+.csv-panel { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; display: none; }
+.csv-panel.open { display: block; }
+.csv-top { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--bg2); border-bottom: 1px solid var(--border); }
+.csv-title { font-size: 11px; font-weight: 600; font-family: var(--fh); color: var(--muted); }
+.csv-hint { font-size: 11px; color: var(--muted); font-family: var(--fm); }
+.csv-ta { width: 100%; height: 150px; font-family: var(--fm); font-size: 10px; padding: 9px 11px; border: none; background: var(--bg); color: var(--muted); resize: vertical; display: block; line-height: 1.4; }
+.csv-ta:focus { outline: none; }
+
+/* Weights tab */
+.wr { display: flex; align-items: center; gap: 10px; margin-bottom: 11px; }
+.wl { font-size: 12px; color: var(--muted); width: 180px; flex-shrink: 0; font-family: var(--fm); }
+.wv { font-size: 12px; font-weight: 600; width: 32px; text-align: right; font-family: var(--fm); }
+.wt { font-size: 11px; margin-top: 5px; font-family: var(--fm); }
+
+/* Footer */
+.footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.footer-l { font-size: 11px; color: var(--muted); font-family: var(--fm); }
+.footer-r { font-size: 11px; color: var(--muted); font-family: var(--fm); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Header -->
+<div class="hdr">
+  <div class="hdr-l">
+    <div class="logo">
+      <svg viewBox="0 0 18 18">
+        <polyline points="2,14 6,8 11,11 16,3"/>
+        <circle cx="16" cy="3" r="1.8" fill="white" stroke="none"/>
+      </svg>
+    </div>
+    <div>
+      <div class="app-title">Workbook Complexity Scorer</div>
+      <div class="app-sub">Tableau BIC customization assessment · migration triage</div>
+    </div>
+  </div>
+  <span class="version-badge">v2.3 · Lease Admin · FM · Finance · Savings calibrated</span>
+</div>
+
+<!-- Tabs -->
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('analyze')">Analyze</div>
+  <div class="tab" onclick="switchTab('standards')">Standards library</div>
+  <div class="tab" onclick="switchTab('weights')">Scoring weights</div>
+  <div class="tab" onclick="switchTab('about')">About</div>
+</div>
+
+<!-- ANALYZE TAB -->
+<div class="panel active" id="panel-analyze">
+  <div id="noStdWarn" style="display:none" class="ntc err">
+    <strong>No standard uploaded yet.</strong>
+    Go to the <a onclick="switchTab('standards')">Standards library</a> tab and upload the BIC .twbx for your service line.
+    Without a standard, all fields appear novel and the score will be inflated.
+  </div>
+  <div class="r2" style="margin-bottom:16px">
+    <div>
+      <div class="lbl">1. Upload workbook to score</div>
+      <div class="dz" id="wbDrop" onclick="document.getElementById('wbIn').click()">
+        <input type="file" id="wbIn" accept=".twb,.twbx" style="display:none">
+        <div class="di">📂</div>
+        <div class="dl" id="wbLbl">Drop .twb or .twbx here, or click to browse</div>
+      </div>
+    </div>
+    <div>
+      <div class="lbl">2. Select service line standard</div>
+      <select id="stdSel" style="margin-bottom:8px"><option value="">— No standards saved yet —</option></select>
+      <div id="slInf" style="font-size:11px;color:var(--muted);font-family:var(--fm);min-height:16px;line-height:1.5"></div>
+    </div>
+  </div>
+  <button class="btn btn-p" id="runBtn" disabled onclick="runAnalysis()">Score workbook</button>
+  <div id="resultArea" style="margin-top:18px"></div>
+</div>
+
+<!-- STANDARDS LIBRARY TAB -->
+<div class="panel" id="panel-standards">
+  <div class="ntc">
+    <strong>Step 1:</strong> Select a service line below.
+    <strong>Step 2:</strong> Upload the BIC standard .twbx for that service line.
+    The standard's field set becomes the baseline for scoring — upload once, shared across sessions via browser storage.
+  </div>
+  <div class="sec">
+    <div class="lbl">Service line</div>
+    <div class="slg" id="slGrid"></div>
+    <div style="margin-bottom:10px">
+      <div class="lbl" style="margin-bottom:6px">Label <span style="font-weight:400;text-transform:none;font-family:var(--fm);font-size:10px">(optional — leave blank to use service line name, e.g. add "v4.2" to track version)</span></div>
+      <input type="text" id="stdName" placeholder="e.g. Portfolio Intelligence v4.2">
+    </div>
+    <div class="dz" id="stdDrop" onclick="document.getElementById('stdFile').click()" style="margin-bottom:10px">
+      <input type="file" id="stdFile" accept=".twb,.twbx" style="display:none">
+      <div class="di">⬆️</div>
+      <div class="dl" id="stdLbl">Drop BIC standard .twbx here, or click to browse</div>
+    </div>
+    <button class="btn btn-p" id="saveBtn" disabled onclick="saveStandard()">Save to library</button>
+  </div>
+  <div class="sec">
+    <div class="lbl">Saved standards</div>
+    <div id="stdList"><div class="es">No standards saved yet.<br><small>Select a service line above and upload its BIC .twbx to get started.</small></div></div>
+  </div>
+  <div class="ntc warn" style="margin-top:8px;font-size:11px">
+    Standards are stored in your browser's local storage. They persist across sessions on this browser but won't automatically sync to other team members' browsers.
+    Each team member needs to upload the BIC standard once on their own browser.
+  </div>
+</div>
+
+<!-- WEIGHTS TAB -->
+<div class="panel" id="panel-weights">
+  <div class="ntc ok">
+    Scoring weights for <strong>Lease Admin / Portfolio Intelligence</strong> were calibrated from 17 labeled workbooks using regression optimization.
+    Adjustments below apply to your session only and reset on page refresh.
+  </div>
+  <div class="sec">
+    <div class="lbl">Standard to adjust</div>
+    <select id="wStdSel" style="margin-bottom:16px"><option value="">— Select a standard —</option></select>
+    <div id="wContent" style="color:var(--muted);font-size:12px;font-family:var(--fm)">Select a standard above to view and adjust its scoring weights.</div>
+  </div>
+</div>
+
+<!-- ABOUT TAB -->
+<div class="panel" id="panel-about">
+  <div style="max-width:580px">
+    <div class="lbl" style="margin-bottom:10px">How scoring works</div>
+    <div style="font-size:13px;color:var(--muted);line-height:1.7;margin-bottom:16px">
+      This tool analyzes the XML structure of a Tableau workbook (.twb/.twbx) and scores it on a
+      <strong style="color:var(--text)">1–10 scale</strong> representing how far it has deviated from the BIC standard,
+      where 1 = pure data repoint and 10 = net-new solution.
+    </div>
+
+    <div class="lbl" style="margin-bottom:8px">Scale definition</div>
+    <div style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:16px">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="background:var(--bg2)">
+          <th style="padding:8px 12px;text-align:left;font-family:var(--fh);font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Score</th>
+          <th style="padding:8px 12px;text-align:left;font-family:var(--fh);font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Band</th>
+          <th style="padding:8px 12px;text-align:left;font-family:var(--fh);font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Description</th>
+        </tr></thead>
+        <tbody>
+          <tr style="border-top:1px solid var(--border)"><td style="padding:7px 12px;font-weight:600;font-family:var(--fh);color:#00593d">1–2</td><td style="padding:7px 12px;color:var(--muted)">Automatic BIC</td><td style="padding:7px 12px;color:var(--muted)">Pure repoint or branding only — no customization effort</td></tr>
+          <tr style="border-top:1px solid var(--border)"><td style="padding:7px 12px;font-weight:600;font-family:var(--fh);color:#007a52">3–4</td><td style="padding:7px 12px;color:var(--muted)">Auto+</td><td style="padding:7px 12px;color:var(--muted)">Minor layout/viz changes or new visuals with existing fields</td></tr>
+          <tr style="border-top:1px solid var(--border)"><td style="padding:7px 12px;font-weight:600;font-family:var(--fh);color:#9a6700">5–6</td><td style="padding:7px 12px;color:var(--muted)">Evaluate</td><td style="padding:7px 12px;color:var(--muted)">Redesigned dashboards or logic using existing BIC fields</td></tr>
+          <tr style="border-top:1px solid var(--border)"><td style="padding:7px 12px;font-weight:600;font-family:var(--fh);color:#a84800">7–8</td><td style="padding:7px 12px;color:var(--muted)">Custom build</td><td style="padding:7px 12px;color:var(--muted)">Client-specific fields, KPIs, or logic requiring new semantic fields</td></tr>
+          <tr style="border-top:1px solid var(--border)"><td style="padding:7px 12px;font-weight:600;font-family:var(--fh);color:#9b1c1c">9–10</td><td style="padding:7px 12px;color:var(--muted)">Do not use BIC</td><td style="padding:7px 12px;color:var(--muted)">Near full rebuild or net-new solution</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="lbl" style="margin-bottom:8px">Signals used</div>
+    <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px;font-size:12px">
+      <div style="display:flex;gap:10px;padding:8px 12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border)">
+        <div style="font-weight:600;color:var(--text);width:180px;flex-shrink:0;font-family:var(--fh)">Entity/domain fields (50%)</div>
+        <div style="color:var(--muted)">Remote fields not in any confirmed BIC build — client-specific business data like <code style="font-family:var(--fm)">parking</code>, <code style="font-family:var(--fm)">security_deposit</code></div>
+      </div>
+      <div style="display:flex;gap:10px;padding:8px 12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border)">
+        <div style="font-weight:600;color:var(--text);width:180px;flex-shrink:0;font-family:var(--fh)">Missing BIC areas (20%)</div>
+        <div style="color:var(--muted)">BIC content areas absent from the workbook — indicates structural divergence</div>
+      </div>
+      <div style="display:flex;gap:10px;padding:8px 12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border)">
+        <div style="font-weight:600;color:var(--text);width:180px;flex-shrink:0;font-family:var(--fh)">Custom dashboards (15%)</div>
+        <div style="color:var(--muted)">Dashboards added beyond any known BIC version</div>
+      </div>
+      <div style="display:flex;gap:10px;padding:8px 12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border)">
+        <div style="font-weight:600;color:var(--text);width:180px;flex-shrink:0;font-family:var(--fh)">Metric extensions (5%)</div>
+        <div style="color:var(--muted)">BIC-style calculated metrics not in standard — lower weight as common add-ons</div>
+      </div>
+      <div style="display:flex;gap:10px;padding:8px 12px;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border)">
+        <div style="font-weight:600;color:var(--text);width:180px;flex-shrink:0;font-family:var(--fh)">WS density / Design (10%)</div>
+        <div style="color:var(--muted)">Worksheet-per-dashboard ratio vs standard; non-CBRE color palettes</div>
+      </div>
+    </div>
+
+    <div class="lbl" style="margin-bottom:8px">Service line status</div>
+    <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:16px">
+      <strong style="color:var(--text)">Lease Admin / Portfolio Intelligence</strong> — calibrated from 17 labeled workbooks. Accuracy ±1.5 on 80% of test cases.<br>
+      <strong style="color:var(--text)">Facilities Management</strong> — calibrated from 17 labeled workbooks. Accuracy ±1.5 on 88% of test cases.<br>
+      <strong style="color:var(--text)">Financial Analysis</strong> — calibrated · 14 labeled workbooks<br>
+      <strong style="color:var(--text)">Savings / Value Track</strong> — calibrated · 12 labeled workbooks<br>
+      <strong style="color:var(--text)">Occupancy, Project Mgmt, Capital Markets</strong> — coming soon.
+    </div>
+
+    <div class="lbl" style="margin-bottom:8px">Privacy &amp; data handling</div>
+    <div style="font-size:12px;color:var(--muted);line-height:1.6">
+      All processing happens locally in your browser. No workbook data, field names, or results are sent to any server or external service.
+      The tool reads only the XML structure of .twbx files — dashboard names, field names, and metadata. No actual lease data or client data is read.
+    </div>
+  </div>
+</div>
+
+</div><!-- .container -->
+
+<!-- Footer -->
+<div class="container">
+  <div class="footer">
+    <div class="footer-l">CBRE BIC Workbook Complexity Scorer · v2.0</div>
+    <div class="footer-r">Lease Admin · FM · Finance calibrated · All processing local</div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════════
+// MASTER BIC WHITELIST — 978 fields from confirmed low-complexity workbooks
+// Do not edit unless adding confirmed BIC standard fields
+// ═══════════════════════════════════════════════════════════════════════════════
+const MWL = new Set([
+'absorption rate','absorption_rate','absorption_rate1','activity_skey','address','address line1',
+'address line2','address_1','address_line1','address_line2','adj_area_uom_adjusted',
+'adj_country_adjusted','adj_escalated_rent_adjusted','adj_failing_conditions','adj_include_in_model',
+'adj_lease_duration_adjusted_months','adj_lease_duration_adjusted_years','adj_lease_status_adjusted',
+'adj_lease_type_adjusted','adj_ownership_type_adjusted','adj_passes_all_pre_and_post_tests',
+'adj_passes_all_pre_tests','adj_property_size_uom_adjusted','adj_property_type_adjusted',
+'adj_rent_potential_year','adj_rentable_area_adjusted','adj_resparam_adjust_annual_rent',
+'adj_rtparam_scenario_name','adj_time_to_expiration_adjusted_months',
+'adj_time_to_expiration_adjusted_years','agreement length months','agreement length years',
+'alternate property id','alternate_property_id','annual rent per headcount sf',
+'annual rent per headcount sm','annual rent per seat sf','annual rent per seat sm',
+'associated lease id','associated project number','availability rate','availability_rate',
+'availability_rate1','available_space','available_space1','base_rent_1','base_rent_2',
+'base_rent_3','base_rent_4','base_rent_5','before asking rent sf','before asking rent sm',
+'before yearquarter','before_asking_rent','bic_dashboard','book_value','building id',
+'building_name','buildingid','business unit','business_unit','cap_rate','cap_rate1',
+'cash_flow','cash_flow1','cbre property name','cbre property sub-type','cbre property type',
+'cea_cbre_market_ea','cea_cbre_submarket_ea','cea_failing_conditions','cea_include_in_model',
+'cea_market_absorption_rate','cea_market_asking_rent_class_a','cea_market_availability_rate',
+'cea_market_ea_rent','cea_market_gross_asking_rent','cea_market_net_asking_rent',
+'cea_market_occupancy_rate','cea_market_stock_sf','cea_market_vacancy_rate',
+'cea_market_vacant_space','cea_passes_all_pre_and_post_tests','cea_passes_all_pre_tests',
+'cea_research_quarter','cea_rtparam_scenario_name','cea_submarket_absorption_rate',
+'cea_submarket_asking_rent_class_a','cea_submarket_availability_rate','cea_submarket_ea_rent',
+'cea_submarket_gross_asking_rent','cea_submarket_net_asking_rent','cea_submarket_occupancy_rate',
+'cea_submarket_stock_sf','cea_submarket_vacancy_rate','cea_submarket_vacant_space',
+'city','city_name','client cost center code','client facility classification',
+'client property id','client property name','client property subtype','client skey',
+'client_additional_attrib','client_additional_dataset','client_property_id',
+'client_property_name','client_skey','company name','company_name','completion_date',
+'completion_rate','completion_rate1','compound_type','country','country code','country name',
+'country_code','county_name','critical date','critical date name','critical date status',
+'critical date type','critical_date_id','critical_date_name','critical_date_skey',
+'critical_notice_date','csf headcount','csf_lease_ownership_type','current asking rent sf',
+'current asking rent sm','current yearquarter','current-1_yearquarter','current-2_yearquarter',
+'current_asking_rent','current_data_source','current_exchange_rate','current_yearquarter',
+'dashboard_count','description','dhe_data_health_score','dhe_eda_address','dhe_eda_city',
+'dhe_eda_country','dhe_eda_duplicate_lease_id','dhe_eda_erroneous_size','dhe_eda_errorneous_size',
+'dhe_eda_expired_leases_active','dhe_eda_lease_commencement','dhe_eda_lease_expiration',
+'dhe_eda_lease_id','dhe_eda_lease_more_than_500_years','dhe_eda_lease_mtm_indefinite',
+'dhe_eda_lease_status','dhe_eda_not_distinct_address_for_property_id',
+'dhe_eda_occupancy_greater_than_200_percent','dhe_eda_owned_location_with_expiration',
+'dhe_eda_owned_location_with_rent','dhe_eda_ownership_type','dhe_eda_potential_expired_leases',
+'dhe_eda_property_id','dhe_eda_property_type','dhe_eda_property_type_not_verified',
+'dhe_eda_rent_per_sf_greater_175','dhe_eda_rent_per_sf_less_than_5','dhe_eda_rent_per_sf_ootr',
+'dhe_eda_state','dhe_eda_sublease_with_positive_rent','dhe_eda_total_annual_rent',
+'dhe_eda_us_sites_missing_zip','dhe_eda_validate_geography','dhe_eda_verify_actual_lease',
+'dhe_failing_conditions','dhe_include_in_model','dhe_passes_all_pre_and_post_tests',
+'dhe_passes_all_pre_tests','dhe_rtparam_scenario_name','dhe_score_critical_conditions',
+'dhe_score_critical_data','earliest_notification_date','edp_client_code','edp_create_by',
+'edp_create_ts','edp_delete_f','edp_delta_update_ts','edp_row_id','edp_source_system_code',
+'edp_update_by','edp_update_ts','effective_end_date','effective_start_date','entity_code',
+'entity_desc','entity_name','entity_skey','entity_type','escalated rent adjusted','event_type',
+'expiration','expiration date passed','fact_metric_skey','flexible_space','fquarter_number',
+'fyear_number','geography_code','geography_code1','geography_level_name','geography_level_name1',
+'geography_market_name','geography_market_name1','geography_name','geography_name1',
+'geography_skey','geography_skey1','geography_type_name','geography_type_name1',
+'global_currency_code','gross asking rent sf','gross asking rent sm','head count','head_count',
+'hierarchy_path','initiative','is_active','join_hash','join_hash1','key date','key_date',
+'key_date_status','keydate comment','keydate_comment','latitude','lease business unit',
+'lease commencement','lease expected end date','lease expiration','lease id',
+'lease id (critical dates)','lease market','lease name','lease skey','lease space type',
+'lease status','lease sub market','lease total annual rent','lease type','lease_business_unit',
+'lease_commencement','lease_completed_date','lease_desc','lease_expected_end_date',
+'lease_expiration','lease_id','lease_name','lease_rent_type','lease_size','lease_skey',
+'lease_space_type','lease_start_date','lease_status','lease_type','lease_uom',
+'local_currency_code','location description','location name','location_name','longitude',
+'m2m benchmark source','m2m rent per sf','m2m rent variance','m2m_benchmark_source',
+'m2m_ea_connection_status','m2m_ea_rent_market','m2m_failing_conditions','m2m_include_in_model',
+'m2m_mrt_cbre_market','m2m_mrt_cbre_submarket','m2m_mrt_rent_per_sf_benchmark_ea_gross',
+'m2m_mrt_rent_per_sf_benchmark_ea_net','m2m_mrt_rent_per_sf_benchmark_research',
+'m2m_mrt_rent_per_sf_gross','m2m_mrt_rent_per_sf_net','m2m_mrt_rent_per_sf_research',
+'m2m_passes_all_pre_and_post_tests','m2m_passes_all_pre_tests','m2m_per_diff_threshold',
+'m2m_percent_diff','m2m_pf_rent_per_sf_benchmark','m2m_rate_ratio','m2m_rent_per_sf',
+'m2m_rent_per_sf_benchmark','m2m_rent_per_sf_benchmark_local','m2m_rent_variance',
+'m2m_resparam_per_diff','m2m_rtparam_scenario_name','m2m_total_diff','majorminor','market',
+'market cycle description','market_code','market_code1','market_cycle_desc','market_from_bridge',
+'metric category','metric description','metric name','metric skey','metric subcategory',
+'metric_01_desc','metric_01_name','metric_01_value','metric_01_value_uom','metric_02_desc',
+'metric_02_name','metric_02_value','metric_02_value_uom','metric_03_desc','metric_03_name',
+'metric_03_value','metric_03_value_uom','metric_04_desc','metric_04_name','metric_04_value',
+'metric_04_value_uom','metric_05_desc','metric_05_name','metric_05_value','metric_05_value_uom',
+'metric_category','metric_desc','metric_name','metric_skey','metric_sub_category',
+'monthly_rent_global','monthly_rent_local','months to expiry','mtm','naics','net_absorption',
+'net_absorption1','notice end date','notice_end_date','notice_start_date','number of floors',
+'number of seats','number of workstations','occupancy rate','occupancy_rate','occupancy_rate1',
+'option comment','option end date','option start date','option type','option_begin',
+'option_category','option_comment','option_comments','option_end_date','option_id',
+'option_start_date','option_type','ownership type adjusted','ownership_type',
+'ownership_type_adjusted','parent_geography_name','parent_geography_name1',
+'parent_geography_skey','parent_geography_skey1','parent_metric_skey','pathfinder_source',
+'previous asking rent sf','previous asking rent sm','previous yearquarter','previous_asking_rent',
+'primary_system','project name','project skey','project_name','project_skey','properties',
+'properties1','property description','property id','property lease owned f','property master id',
+'property name','property size','property skey','property status','property type',
+'property type adjusted','property unique id','property_from_bridge','property_id',
+'property_lease_owned_f','property_name','property_ownership_type','property_size_uom',
+'property_skey','property_status','property_sub_type','property_type','property_type_adjusted',
+'property_type_name','property_type_name1','property_unique_id','propertyid','qoq change',
+'quarter number','quarter_number','quarter_number1','record id','record_date','record_id',
+'record_last_update_date','record_status','region','region_code','region_desc','release_content',
+'rent commencement','rent per sf','rent_commencement','rent_escalation',
+'rent_per_sf_benchmark_local','rentable area sf','rentable area sm','rentable_area',
+'response_date','response_skey','row_nbr','scenario_type_desc','scenario_type_desc1','seats',
+'service line id','service line name','service_line','service_line_id','service_line_name',
+'sf bucket','site id','siteid','snapshot date','snapshot_date','source client name',
+'source record hash','source system code','source unique id','source_client_name',
+'source_record_hash','source_system_code','source_type_name','source_type_name1',
+'source_unique_id','start_date','state','state_province_code','stock rentable sf',
+'stock rentable sm','subtype','system_building_id','system_lease_id','test','tier_name',
+'tier_name1','time zone','total annual cost','total annual rent','total operating expenses',
+'total_annual_rent','total_operating_expenses','total_sf_per_head_count_benchmark',
+'total_sf_per_seat_benchmark','transaction name','transaction skey','transaction_name',
+'transaction_skey','user_defined_field_1','user_defined_field_2','user_defined_field_3',
+'user_defined_field_4','vacancy rate','vacancy_rate','vacancy_rate1','vacant workpoints',
+'version_number','very_old_qtr','year actual','year number','year_number','year_number1',
+'years to expiry','yoy change','zip','zip code','zip_code'
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SERVICE LINE REGISTRY
+// To add a new SL: copy 'generic' entry, update id/name/desc/status/color,
+// add calibrated weights, bicAreas, bicStructural, stdWsDash, exponent
+// after running calibration with labeled workbooks.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const STORAGE_KEY = 'bic-scorer-v23s';
+const CBRE_PAL = new Set([
+  'cbre chart - graphs','cbre dark green','cbre green','cbre charts and graphs',
+  'cbre charts and graphs with 50% tints','cbre red green gold diverging',
+  'cbre red yellow green diverging','cbre secondary','cbre infographics',
+  'cbre red yellow green','cbre primary',
+]);
+const BIC_FW  = /^(adj_|dhe_|m2m_|mrt_|pf_|ea_|resparam_|rtparam_|cea_|edp_|metric_|entity_|geography_|fquarter|fyear|source_|snapshot_|record_|join_|row_nbr|version_|release_|pathfinder|bic_|csf_|service_line|scenario_|tier_|majorminor)/i;
+const BIC_SFX = /(_skey$|_flag$|_currency_code\d*$|_unit_name\d*$|_postcomputed\d*$|_precomputed\d*$|_adjusted$|_from_bridge$|\d+$)/i;
+const MET_PAT = /(_per_|per_|_rate$|_ratio|_pct$|percent|_sf$|_sm$|annual_rent|_rent_|escalat|benchmark|headcount|_seat|sqft|_usd$|rent_per|cost_per)/i;
+const AGG_RE  = /^(sum|avg|min|max|count|attr|none|median|stdev|var|countd|collect):/i;
+const ACT_RE  = /^action\s*[\(\[]/i;
+const SYS_RE  = /^(:measure|:dimension|number of records|measure names|measure values|multiple values)/i;
+const AUTO_RE = /^calculation_\d+/i;
+const JUNK_RE  = /:(ok|nk|qk|uk)$/i;
+const TAB_SYS  = /^_[a-z]+_$/i;  // Tableau internal system fields (_ROWNUM_, _CHILDIDS_, etc.)
+const ML = {
+  'Automatic':'Text/Auto','Bar':'Bar','Circle':'Scatter','Square':'Heatmap',
+  'Pie':'Pie','Line':'Line','Area':'Area','Shape':'Map/Shape',
+  'GanttBar':'Gantt','Polygon':'Map','Text':'Crosstab','':'Unknown',
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+const SLS = {
+  'lease-admin': {
+    id: 'lease-admin',
+    name: 'Lease Admin / Portfolio Intelligence',
+    desc: 'Calibrated · 17 labeled workbooks',
+    status: 'trained',
+    color: '#00593d',
+    weights: { entity:50, miss:20, cust:15, metric:5, ws:5, des:5 },
+    bicAreas: [
+      ['critical dates summary','critical dates'],
+      ['expiration overview','expiration schedule'],
+      ['lease details','a&t lease details'],
+      ['lease insights'],
+      ['lease list'],
+      ['market insights','market details'],
+      ['occupancy metrics','a&t occupancy metrics','occupancy cost'],
+      ['portfolio summary','portfolio overview'],
+      ['property details'],
+      ['rent benchmarking','rent gap summary','rent gap analysis summary','rent gap summary do not publish'],
+    ],
+    bicStructural: [
+      'appendix 1 information','appendix 2 implementation','appendix 3 bic version history',
+      'bic version history','implementation notes','data health summary',
+      'sheets for metric alerts do not publish','a&t occupancy metrics_old','mark to market',
+    ],
+    // bicKnown = all LA dashboard aliases (bicAreas flattened + bicStructural)
+    // Required by buildBicSets for correct custom-dash detection
+    bicKnown: new Set([
+      'critical dates summary','critical dates',
+      'expiration overview','expiration schedule',
+      'lease details','a&t lease details',
+      'lease insights',
+      'lease list',
+      'market insights','market details',
+      'occupancy metrics','a&t occupancy metrics','occupancy cost',
+      'portfolio summary','portfolio overview',
+      'property details',
+      'rent benchmarking','rent gap summary','rent gap analysis summary',
+      'rent gap summary do not publish',
+      'appendix 1 information','appendix 2 implementation','appendix 3 bic version history',
+      'bic version history','implementation notes','data health summary',
+      'sheets for metric alerts do not publish','a&t occupancy metrics_old','mark to market',
+    ]),
+    // masterWhitelist and cbrePalettes omitted — scoreWb falls back to global MWL + CBRE_PAL
+    // which were built from LA workbooks and are the correct defaults
+    stdWsDash: 9.5,
+    trainingCount: 17,
+    exponent: 0.45,
+  },
+  'generic': {
+    id: 'generic',
+    name: 'Generic (untrained)',
+    desc: 'No SL calibration · equal weights',
+    status: 'generic',
+    color: '#6b7280',
+    weights: { entity:30, miss:25, cust:20, metric:10, ws:8, des:7 },
+    bicAreas: [],
+    bicStructural: [],
+    bicKnown: new Set(),  // empty — Generic SL has no BIC dashboard aliases
+    // masterWhitelist + cbrePalettes omitted — scoreWb falls back to global MWL + CBRE_PAL
+    stdWsDash: null,
+    trainingCount: 0,
+    exponent: 0.5,
+  },
+  'fm': {
+    id: 'fm',
+    name: 'Facilities Management',
+    desc: 'Calibrated · 17 labeled workbooks',
+    status: 'trained',
+    color: '#1d4ed8',
+    weights: { entity:55, miss:0, cust:25, metric:3, ws:2, des:15 },
+    bicAreas: [],
+    bicStructural: [
+      'implementation notes','bic version history','data completion scorecard',
+      'sheets for metric alerts do not publish','appendix 1','appendix 2 implementation',
+      'appendix 3 bic version history','fm portfolio snapshot (2)',
+      'asset condition drilldown ','tech utilization ','asset list','fm contact ',
+      'over/under','work order detail','fm contact','data health score card',
+      'data completion scorecard','open work orders ','completed work orders ',
+      'tech utilization','work order summary ','work order list ',
+      'wo generation trending ','self performance opportunities ',
+      'fm insights (2)','work order summary (2)',
+    ],
+    bicKnown: new Set([
+      // Current BIC standard dashboards
+      'fm portfolio snapshot','portfolio snapshot',
+      'fm insights','insights',
+      'fm wo insights','wo insights','work order insights',
+      'work order summary','work order summary (2)',
+      'open work orders','open work orders ',
+      'completed work orders','completed work orders ','completed work order performance',
+      'asset on a page','asset on a page with maintenance',
+      'asset condition drilldown','asset condition drilldown ','asset condition',
+      'fm asset summary','asset summary',
+      'property comparison',
+      'property detail',
+      'property wo detail',
+      'self performance opportunities','self performance opportunities ','self performance',
+      'tech utilization','tech utilization ',
+      'customer satisfaction',
+      'priority sla completion',
+      'cycle time',
+      'data health score card','data health scorecard',
+      'summary score card',
+      // Legacy Hartford-era dashboard names (older FM versions)
+      'work order performance','work order performance older',
+      'work order list','work order list ',
+      'wo generation trending','wo generation trending ','work order generation',
+      'aging and overdue work orders','overdue work orders',
+      'fm insights (2)',
+      // Structural / appendix tabs
+      'implementation notes','bic version history','data completion scorecard',
+      'sheets for metric alerts do not publish','appendix 1','appendix 2 implementation',
+      'appendix 3 bic version history','fm portfolio snapshot (2)',
+      'asset list','fm contact ','fm contact',
+      'over/under','work order detail','data health score card',
+    ]),
+    cbrePalettes: new Set([
+      'cbre dark grey','cbre red yellow dark green','cbre red yellow dark green diverging',
+      'cbre red yellow green','cbre red yellow green diverging','cbre chart - graphs',
+      'cbre dark green','cbre green','cbre charts and graphs','cbre secondary',
+      'cbre infographics','cbre primary','my cbre palette',
+    ]),
+    masterWhitelist: new Set([
+  '3rd party self perform','acquisition_cost','acquisition_cost_currency_skey','acquisition_date','activity desc','activity_change_date','activity_desc','activity_name',
+  'activity_status_date','actual completion date','actual completion month','actual completion month year','actual completion year','actual response date','actual response month','actual response month year',
+  'actual response year','actual_arrival_ts','actual_completed_ts','actual_completion_date_ts','actual_cost','actual_finish_ts','actual_replacement_cost_amount','actual_response_date_ts',
+  'actual_start_ts','actual_wrench_time','address line1','address line2','address_line1','address_line11','address_line2','address_line21',
+  'address_line3','address_line4','address_standardization_satisfied_f','alternate property id','alternate_email_address_text','alternate_property_id','alternate_vendor_name','answer',
+  'answer_1','answer_2','answer_3','answer_4','answer_5','answer_6','answer_7','answer_8',
+  'asset category','asset equipment skey','asset id and name','asset sub category','asset tag id','asset unique id','asset_category_code','asset_category_code_desc',
+  'asset_ownership_type','asset_sub_category_code','asset_sub_category_code_desc','asset_tag_id','assigned to','assigned_name','assigned_name (fm_report_workorder_survey_vw)','associated lease id',
+  'associated project number','associated_lease_id','associated_project_number','auto_leak_check_f','auto_notify_f','average condition score','average expected life','average_order_cost',
+  'average_order_time','avg condition','avg condition #','avg labor hours per wo','avg total of labor logged hours','barcode_id','bid_amount','budget_reference',
+  'building_element_classification_skey','building_phone_number','business unit','business_phone_number','business_unit_skey','caller_id','caller_name','caller_skey',
+  'caller_type_name','caller_type_seq','campus_code','campus_desc','campus_skey','campus_skey1','capacity','capacity_uom',
+  'catalog_id','catalog_name','catalog_type','category code description','category_code','category_code_desc','category_desc','category_id',
+  'cbre property name','cbre property sub-type','cbre property type','cbre_group_f','cbre_property_name','cbre_property_name (custom sql query)','cbre_standardized_cost_category_code','cbre_standardized_cost_category_skey',
+  'cbre_standardized_cost_sub_category_code','cbre_standardized_cost_sub_category_skey','cbre_standardized_labor_charge','cbre_standardized_labor_name','cbre_standardized_labor_type_name','cbre_standardized_property_group_name','cbre_standardized_property_group_skey','cbre_standardized_property_name',
+  'cbre_standardized_property_skey','cbre_standardized_property_sub_type_name','cbre_standardized_property_sub_type_skey','cbre_standardized_property_type_name','cbre_standardized_property_type_skey','cbre_standardized_region_name','cbre_standardized_region_skey','cbre_standardized_service_classification_skey',
+  'cbre_standardized_vendor_client_skey','cbre_standardized_vendor_name','cbre_standardized_vendor_skey','cbre_standardized_workorder_category_code','cbre_standardized_workorder_category_skey','cbre_standardized_workorder_sub_category_code','cbre_standardized_workorder_sub_category_skey','cbre_standardized_workorder_type_code',
+  'cbre_standardized_workorder_type_skey','city name','city_name','city_name1','class_code','client cost center code','client facility classification','client property id',
+  'client property name','client skey','client_additional_attrib','client_additional_attrib1','client_additional_attrib2','client_additional_attrib3','client_additional_dataset','client_additional_dataset1',
+  'client_additional_dataset2','client_additional_dataset3','client_cost_center_code','client_facility_classification','client_property_id','client_property_name','client_purchase_order','client_reference_id',
+  'client_skey','client_skey1','client_skey2','client_skey3','client_vendor_number','closed_date','closed_date1','cmms_total_work_order_costs_amount',
+  'cmms_total_work_order_costs_currency_skey','cmms_work_order_count','company_name','completion date','completion notes','completion status','completion_notes','condition code',
+  'condition code desc','condition code desc formula','condition_code','condition_code_desc','contract_line_skey','corrective %','corrective or preventive','corrective work orders',
+  'cost location skey','cost model skey','cost_center_code','cost_center_desc','cost_code','cost_location_name','cost_location_skey','cost_model_name',
+  'cost_model_skey','count of asset','count of self perform wos','countd maint plan id','country code','country name','country_code','country_code1',
+  'country_name','country_skey','county_name','created by','created_by_user','created_on_behalf_of','critical asset flag','critical assets',
+  'critical assets in poor condition','critical_asset_f','criticality and  condition score','criticality code','criticality code desc','criticality_code','criticality_code_desc','criticality_condition score',
+  'csf headcount','csf_assetclass','csf_book_value','csf_building_chargeable_area','csf_building_class','csf_building_contact_id','csf_building_status_calculated','csf_cfdasbestos',
+  'csf_cfdbuildingexpansion','csf_cfdbuildingid','csf_cfdbuildingtype','csf_cfdbuildinguse','csf_cfdcapitalprojects','csf_cfdcbrebuildingid','csf_cfdcondition','csf_cfdfmid',
+  'csf_cfdhprinfo','csf_cfdjcifmmanaged','csf_cfdleasetermtype','csf_cfdleedcertdate','csf_cfdleedcertified','csf_cfdlegacystate','csf_cfdlegacytycostate','csf_cfdnextdoor',
+  'csf_cfdplanttype','csf_cfdyearconstructed','csf_gis_latitude','csf_gis_longitude','csf_headcount','csf_leased_area','csf_operating_costs_annual','csf_owned_area',
+  'csf_rent_in_annual','csf_rent_out_annual','csf_total_occupancy_costs_annual','csf_total_rentable_area','csf_workstations','currency_iso_3_code','customer_number','customer_order_number',
+  'customer_site_number','day','deferred_maintenance_cost','deferred_maintenance_cost_amount','deferred_maintenance_cost_amount_currency_skey','deferred_maintenance_cost_currency_skey','dim work orders_day','dim work orders_month',
+  'dim work orders_year','disposed_date','distinct count completed on time','distinct count of asset','distinct count of equipment','distinct count of properties','distinct count of work order','district_name',
+  'due_date_ts','e_p_skey','edp delete f','edp update ts','edp_client_id','edp_create_ts','edp_create_ts1','edp_create_ts2',
+  'edp_create_ts3','edp_create_ts4','edp_delete_f','edp_delete_f1','edp_delete_f2','edp_delete_f3','edp_update_by','edp_update_by1',
+  'edp_update_by2','edp_update_by3','edp_update_ts','edp_update_ts (fm_report_workorder_survey_vw)','edp_update_ts1','edp_update_ts2','edp_update_ts3','email_address_text',
+  'employee_cost_center','employee_number','employee_number_2','employee_third_party_f','employeenumber2_name','employeenumber2_skey','employeenumber3_name','employeenumber3_skey',
+  'employeenumber_name','employeenumber_skey','entity_code','entity_desc','entity_name','entity_skey','entity_type','equipment category code',
+  'equipment category description','equipment description','equipment id','equipment make','equipment model number','equipment name','equipment serial number','equipment sub category description',
+  'equipment_category_code','equipment_category_desc','equipment_desc','equipment_id','equipment_make','equipment_model_number','equipment_name','equipment_serial_number',
+  'equipment_skey','equipment_status_code','equipment_sub_category_code','equipment_sub_category_desc','equipment_sub_category_skey','equipment_sub_category_skey1','equipment_tag_seq','equipment_type_code',
+  'estimated asset remaining life bins','estimated completion date','estimated completion month','estimated completion year','estimated response date','estimated response month','estimated response month year','estimated response year',
+  'estimated_completion_date_ts','estimated_response_date_ts','estimated_service_cost','estimated_wrench_time','expected life','expected_life','expected_life_uom','facility manager',
+  'facility_manager_code','fact metric skey','fact_metric_skey','filter-nulls-for-equipment','first_assigned_ts','first_sent_to_provider_ts','fm portfolio','generated_by_system',
+  'geography_latitude_code','geography_longitude_code','geography_longtitude_code','global_region_skey','gws_system_customer_number','gws_system_customer_site_desc','gws_system_customer_site_number','gws_system_district_desc',
+  'gws_system_district_number','has_children_f','history_f','input_stream_name','installation date','installation_date','installed_desc','is_active_f',
+  'is_out_of_scope_f','jcistatutory_f','job_plan_id','job_plan_number','job_title','last refresh date','last_completion_date','latitude',
+  'lease name','lease skey','lease_name','lease_skey','life cycle expire date','life_cycle_expire_date','local_activity_change_date','local_activity_status_date',
+  'local_actual_arrival_ts','local_actual_completed_ts','local_actual_completion_date_ts','local_actual_response_date_ts','local_actual_start_ts','local_currency_skey','local_due_date_ts','local_estimated_completion_date_ts',
+  'local_estimated_response_date_ts','local_first_assigned_ts','local_first_sent_to_provider_ts','local_scheduled_finish_ts','local_scheduled_start_ts','local_source_created_ts','local_target_completed_ts','local_target_start_ts',
+  'local_workorder_creation_date_ts','local_workorder_dispatched_date_ts','locale_id','locality_name','location','location description','location name','location_alternate_desc',
+  'location_desc','location_id','longitude','main_client_skey','maint equipment skey','maint parent plan id','maint parent plan skey','maint plan desc',
+  'maint plan id','maint plan name','maint plan number','maint plan status','maint plan task list','maint scheduled start date','maint source client name','maintainer_type',
+  'maintenance_plan_skey','maintenance_skey','managed_by_cbre_f','market','market_name','market_skey','max of priority condition','max of priority cost',
+  'max of priority criticality','max of priority remaining life','max of priority work order count','metric 01 desc','metric 01 name','metric 01 value','metric 01 value uom','metric 02 desc',
+  'metric 02 name','metric 02 value','metric 02 value uom','metric 03 desc','metric 03 name','metric 03 value','metric 03 value uom','metric 04 desc',
+  'metric 04 name','metric 04 value','metric 04 value uom','metric 05 desc','metric 05 name','metric 05 value','metric 05 value uom','metric 06 desc',
+  'metric 06 name','metric 06 value','metric 06 value uom','metric 07 desc','metric 07 name','metric 07 value','metric 07 value uom','metric 08 desc',
+  'metric 08 name','metric 08 value','metric 08 value uom','metric 09 desc','metric 09 name','metric 09 value','metric 09 value uom','metric 10 desc',
+  'metric 10 name','metric 10 value','metric 10 value uom','metric 11 desc','metric 11 name','metric 11 value','metric 12 desc','metric 12 name',
+  'metric 12 value','metric 13 desc','metric 13 name','metric 13 value','metric 14 desc','metric 14 name','metric 14 value','metric 15 desc',
+  'metric 15 name','metric 15 value','metric 16 desc','metric 16 name','metric 16 value','metric category','metric description','metric name',
+  'metric skey','metric subcategory','metric_01_desc','metric_01_name','metric_01_value','metric_01_value_uom','metric_02_desc','metric_02_name',
+  'metric_02_value','metric_02_value_uom','metric_03_desc','metric_03_name','metric_03_value','metric_03_value_uom','metric_04_desc','metric_04_name',
+  'metric_04_value','metric_04_value_uom','metric_05_desc','metric_05_name','metric_05_value','metric_05_value_uom','metric_06_desc','metric_06_name',
+  'metric_06_value','metric_06_value_uom','metric_07_desc','metric_07_name','metric_07_value','metric_07_value_uom','metric_08_desc','metric_08_name',
+  'metric_08_value','metric_08_value_uom','metric_09_desc','metric_09_name','metric_09_value','metric_09_value_uom','metric_10_desc','metric_10_name',
+  'metric_10_value','metric_10_value_uom','metric_11_desc','metric_11_name','metric_11_value','metric_12_desc','metric_12_name','metric_12_value',
+  'metric_13_desc','metric_13_name','metric_13_value','metric_14_desc','metric_14_name','metric_14_value','metric_15_desc','metric_15_name',
+  'metric_15_value','metric_16_desc','metric_16_name','metric_16_value','metric_category','metric_desc','metric_name','metric_skey',
+  'metric_sub_category','minority_code','minority_code_desc','month','month year est completion date','month year installation date','month year warranty date','month year workorder creation date',
+  'name','neighbourhood_skey','note','notes','number of floors','number of seats','number of workstations','number_of_floor',
+  'number_of_it_hall','number_of_it_rack','number_of_seat','number_of_workstation','on_hold_f','parent metric skey','parent_catalog_id','parent_equipment_skey',
+  'parent_maintenance_skey','parent_metric_skey','parent_plan_configuration_f','parent_plan_id','parent_property_skey','parent_service_classification_skey','parent_vendor_skey','parent_workorder_configuration_f',
+  'parent_workorder_number','parent_workorder_relationship_name','parent_workorder_skey','phone_number','plan_desc','plan_id','plan_name','plan_number',
+  'plan_status','plan_task_list','preventative work orders','principal_agency_code','priority cm or pm ratio','priority code','priority condition','priority cost',
+  'priority criticality','priority remaining life','priority wo count','priority_code','priority_code_desc','priority_code_skey','priority_code_skey1','priority_level',
+  'problem code id','problem_code_account_skey','problem_code_desc','problem_code_id','problem_code_keywords','problem_code_priority_code','problem_code_priority_code_desc','problem_code_skey',
+  'problem_code_skey1','project name','project skey','project_name','project_skey','property description','property lease owned f','property master id',
+  'property name','property size','property skey','property status','property sub-type','property type','property_address_code','property_desc',
+  'property_hierarchy_skey','property_id_in_originating_system','property_lease_owned_f','property_master_id','property_name','property_note','property_size','property_size_uom',
+  'property_skey','property_skey1','property_skey2','property_skey_join','property_status','property_sub_type','property_type','property_unique_id',
+  'property_uom','quantity','quantity_uom','question_1','question_2','question_3','question_4','question_5',
+  'question_6','question_7','question_8','queue_skey','raised_floor_area','raised_floor_area_uom','ref_actual_replacement_cost_amount_currency_skey','reference_01',
+  'reference_02','reference_03','reference_04','reference_05','reference_06','reference_07','reference_08','region',
+  'region_code','region_desc','region_skey','related_source_system_code','related_vendor_id','repair category code desc','repair_category_code','repair_category_code_desc',
+  'repair_code','repair_code_desc','repair_code_skey','replacement_cost','replacement_cost_currency_code','replacement_cost_date','replacement_type_code','reporting_code_1',
+  'reporting_code_2','reporting_code_3','reporting_code_4','reporting_code_5','reporting_code_6','reporting_code_7','reporting_hierarchy_skey','request_skey',
+  'requested_by_type_id','revised estimated completion date','rolling 6 month','route_desc','route_id','row nbr','row_nbr','schedule_length',
+  'scheduled_date','scheduled_finish_date','scheduled_finish_ts','scheduled_finish_ts_ts','scheduled_frequency','scheduled_labor_hours_duration','scheduled_next_run_date','scheduled_replacement',
+  'scheduled_start_date','scheduled_start_ts','scheduled_start_ts_ts','scheduled_total_duration','score_1','score_2','score_3','score_4',
+  'score_5','score_6','score_7','score_8','self-perform %','service line id','service line name','service_category_desc',
+  'service_category_id','service_classification_alternate_id','service_classification_desc','service_classification_id','service_classification_name','service_classification_path','service_classification_skey','service_classification_skey1',
+  'service_desc','service_id','service_line_id','service_line_name','service_request_number','site_desc','site_id','site_skey',
+  'snapshot date','snapshot_date','source client name','source record hash','source system code','source system code property','source unique id','source_client_name',
+  'source_client_name (fm_report_workorder_survey_vw)','source_client_name1','source_client_name2','source_client_name3','source_country_code','source_country_name','source_created_by','source_created_date',
+  'source_created_ts','source_modified_by','source_modified_date','source_modified_ts','source_record_hash','source_record_hash1','source_record_hash2','source_record_hash3',
+  'source_system_code','source_system_code (com_dim_property_vw)','source_system_code (fm_dim_problem_code_vw)','source_system_code (fm_report_workorder_survey_vw)','source_system_code (fm_si_property_assignment_vw)','source_system_code1','source_system_code2','source_system_code3',
+  'source_unique_id','source_unique_id (com_dim_property_vw)','source_unique_id (fm_dim_problem_code_vw)','source_unique_id (fm_si_property_assignment_vw)','source_unique_id1','source_unique_id2','source_unique_id3','standardization_hash',
+  'standardization_precision','standardization_score','standardized_address_line_1','standardized_address_line_2','standardized_city_name','standardized_country_code','standardized_county','standardized_latitude',
+  'standardized_longitude','standardized_state','standardized_zip_code','state province code','state_province_code','state_province_code1','status','status code',
+  'status code desc','status_code','status_code_desc','status_code_skey','statutory_f','sub category code desc','sub-market','sub_category_code',
+  'sub_category_code_desc','submarket_name','submarket_skey','supervisor_skey','supervisor_worker_name','survey_comment','survey_date','survey_id',
+  'target completed date','target_completed_ts','target_start_ts','team_name2','team_skey','team_skey2','tech1_name','tech1_skey',
+  'tech2_name','tech2_skey','time zone','time_zone','time_zone1','total of est remaining life years','total of expected life','total of labor logged hours',
+  'total of priority condition','total of priority cost','total of priority criticality','total of priority remaining life','total rentable area','total rentable area uom','total replacement cost','total_labor_logged_hours',
+  'total_power_allocated','total_power_allocated_uom','total_rentable_area','total_rentable_area_uom','transaction name','transaction skey','transaction_name','transaction_skey',
+  'type code desc','type_code','type_code_desc','urgency_level','user_defined_field_1','user_defined_field_2','user_defined_field_3','user_defined_field_4',
+  'vendor','vendor skey','vendor_id','vendor_name','vendor_name2','vendor_site_skey','vendor_skey','vendor_skey2',
+  'vendor_status','vendor_tax_id','vendor_type_code','vendor_type_desc','warranty date','warranty_date','wo count rolling 6 month','wo_date',
+  'wo_p_skey','wo_request_id','work order type','work order unique id','worker_name','worker_role_code','worker_role_desc','worker_skey',
+  'worker_skey1','worker_skey2','worker_status','worker_type_code','workorder comments','workorder creation date','workorder creation month','workorder creation year',
+  'workorder desc','workorder equipment skey','workorder number','workorder skey','workorder_comments','workorder_creation_date_ts','workorder_desc','workorder_dispatched_date_ts',
+  'workorder_number','workorder_number (fm_report_workorder_survey_vw)','workorder_number1','workorder_skey','workorder_survey_skey','workorder_type_code','workorder_type_code_desc','workorder_type_skey',
+  'workorder_type_skey1','year','zip code','zip_code','zip_code1'
+]),
+    stdWsDash: 7.31,
+    trainingCount: 18,
+    exponent: 0.40,
+  },
+  'finance': {
+    id: 'finance',
+    name: 'Financial Analysis',
+    desc: 'Calibrated · 14 labeled workbooks',
+    status: 'trained',
+    color: '#6d28d9',
+    weights: { entity:60, miss:0, cust:10, metric:14, ws:10, des:6 },
+    bicAreas: [],
+    bicStructural: [
+      'implementation notes','bic version history','appendix 1','appendix 2 implementation',
+      'appendix 3 bic version history','sheets for metric alerts do not publish',
+      'data health summary','finance summary (2)',
+    ],
+    cbrePalettes: new Set([
+      'cbre chart - graphs','cbre dark green','cbre green','cbre infographics',
+      'cbre red yellow green 50% diverging','cbre red yellow green diverging',
+      'cbre red-green diverging','cbre secondary','cbre charts and graphs',
+      'cbre charts and graphs with 50% tints','cbre red green gold diverging',
+    ]),
+    bicKnown: new Set([
+      'finance insights','finance summary','portfolio details','property comparison',
+      'property details','variance reporting','vendor summary',
+      'benchmarking detail','forecast vs plan summary',
+      'expense statement ytd','expense statement ytd (2)','expense statement fy',
+      'data completion scorecard','data completeness','metric alerts',
+      'operations benchmarking','site comparison',
+      'current year financial summary (depr)','monthly detail - financial summary',
+      'current year financial summary','variance analysis','variance analysis - visual',
+      '1.finance summary','2.portfolio detail','3.cost center detail',
+      '4.property comparison','5.property details','6.variance reporting',
+      '7.vendor summary','appendix 1a information',
+      'implementation notes','bic version history','appendix 1','appendix 2 implementation',
+      'appendix 3 bic version history','sheets for metric alerts do not publish',
+      'data health summary','finance summary (2)',
+    ]),
+    masterWhitelist: new Set([
+  'account code','account code%','account name','account_cat_code','account_category_code','account_category_name','account_code','account_description',
+  'account_name','account_number','account_type','accounted_credit','accounted_debit','acct name','activity_skey','activity_skey1',
+  'activity_skey2','activity_skey3','actuals','actuals %','actuals vs budget variance','actuals vs budget variance %','actuals vs budget variance label ii','actuals vs forecast variance',
+  'actuals_dim','adaptive account name','adaptive_posting_date','address line 1','address1','address_1','address_2','address_3',
+  'address_4','address_code','address_line1','address_line2','address_standardization_satisfied_f','alternate_property_id','amount','aoid',
+  'approval_code','area_name_code','arena_code','associated_lease_id','associated_project_number','att_account_code','att_account_desc','att_expense_category',
+  'att_expense_code_code','att_geoloc_code','att_gl_account_code','att_gl_code','att_location_code','att_project_number_code','att_rcc_code','att_rco_code',
+  'att_transaction_expense_code','att_transaction_expense_code_desc','attribute_id','attribute_value','available_seating_capacity','avg attendance','avg property area','base capacity',
+  'baseline_category','bic_row_key_code','budget','budget_dim','budget_savings_type_code','building_classification','building_classification1','building_code',
+  'building_name','building_organization','building_phone_number','business_phone_number','business_unit_region','cbre property name','cbre standardized region name','cbre_account_category_code',
+  'cbre_explanation_remark','cbre_property_name','cbre_property_name_1','cbre_rom_code','cbre_standardized_property_name','cbre_standardized_property_skey','cbre_standardized_property_sub_type_name','cbre_standardized_property_sub_type_skey',
+  'cbre_standardized_property_type_name','cbre_standardized_property_type_skey','cbre_standardized_region_name','cbre_standardized_region_skey','cbre_vendor_invoice_','cbre_vendor_invoice_date','cbre_vendor_name','cbre_vendor_purchase_order',
+  'charge_code_code','check_number','city','city name','city1','city_code','city_name','client property id',
+  'client property id 1','client property name','client region','client skey','client_account_group_code','client_account_group_name','client_additional_attrib','client_additional_dataset',
+  'client_cost_center_code','client_cost_center_name','client_cost_type_code','client_cost_type_name','client_facility_classification','client_facing','client_gl','client_gl_code',
+  'client_gl_code1','client_gl_code2','client_gl_name','client_gl_name1','client_gl_name2','client_property_id','client_property_id (com_dim_property_vw)','client_property_name',
+  'client_property_name (com_dim_property_vw)','client_property_name_1','client_reference_id','client_skey','client_skey1','clli','closed_date','cloud_site_',
+  'code','code1','code2','code3','comment_currentmonth','comment_ytd','company','company_description',
+  'consulting_company_code','conversion rate date','conversion_rate_type','cost_category','cost_high','cost_location_name','cost_location_skey','cost_low',
+  'cost_matrix_skey','cost_medium','cost_model_name','cost_model_skey','cost_subcategory','costlab_category','costlab_subcategory','count d property unique id',
+  'country','country name','country1','country_code','country_name','country_skey','county','county_name',
+  'created_by','csf_landlordvendor','currency','currency code','current fcst hc (dec)','d_c_area_manager','data_source_code','date',
+  'date title-benchmarking detail','date title-operations benchmarking','day','dco_area','dco_control_group','dco_region','deep_dive_site','default_assignee',
+  'default_team_name','deferred_maintenance_cost_amount','deferred_maintenance_cost_amount_currency_skey','department','disable_ovcp_integration','district_name','doc_number','doc_type',
+  'document_type_code','edp delete f','edp update ts','edp_client_code','edp_client_code1','edp_client_code2','edp_client_code3','edp_create_by',
+  'edp_create_by1','edp_create_by2','edp_create_by3','edp_create_ts','edp_create_ts1','edp_create_ts2','edp_create_ts3','edp_create_ts4',
+  'edp_create_ts5','edp_delete_f','edp_delete_f1','edp_delete_f2','edp_delete_f3','edp_delete_f4','edp_row_id','edp_row_id1',
+  'edp_row_id2','edp_row_id3','edp_source_system_code','edp_source_system_code1','edp_source_system_code2','edp_source_system_code3','edp_update_by','edp_update_by1',
+  'edp_update_by2','edp_update_by3','edp_update_by4','edp_update_ts','edp_update_ts1','edp_update_ts2','edp_update_ts3','edp_update_ts4',
+  'edp_update_ts5','email_address_text','employee_number','employee_third_party_f','entered_amt','entered_credit','entered_currency','entered_debit',
+  'entity','entity_code','entity_desc','entity_name','entity_skey','entity_type','event class name','expense_category',
+  'expense_type','expensetype','facility_manager','facility_manager_code','facility_manager_name','facility_priority','fact metric skey','fact_metric_skey',
+  'fin_vantage_levels_vw_name','firm_management','fm lead','fm staffed/fm non-staffed','fm_si7_salesdivision_groupname','fmdb account name','fmdb account name subset','fmdb address 1',
+  'fmdb address 2','fmdb city','fmdb country','fmdb dcs property','fmdb facility building name','fmdb facility total sf','fmdb latitude','fmdb lease type',
+  'fmdb lfm busines unit','fmdb lfm business division','fmdb lfm selling team','fmdb longitude','fmdb peoplesoft id','fmdb postcode zipcode','fmdb primary property type','fmdb primary space type',
+  'fmdb sector','fmdb state','forecast','forecast planning version','forecast vs budget variance','forecast_dim','forecast_planning_version','fx rate',
+  'fx_rate','fy planning version','geo_loc_code_code','geography latitude code fl','geography longitude code fl','geography_latitude_code','geography_longitude_code','geography_longtitude_code',
+  'gl batch name','gl line number','gl_account','gl_account_id','gl_account_name','gl_date','gl_description','gl_je_name',
+  'gl_line_description','gl_subsidiary_name_code','gobal value','gross_amount','header description','highest day attendance %','hub spoke location','id',
+  'id1','id2','id3','intrenoid','invoice_date','invoice_number','jde_bu','jde_business_unit',
+  'jde_subledger','jdeclient_code','jdeclient_name','je source name','je_line_number','job_title','journal_category','latest planning version',
+  'latitude','lease name','lease skey','lease_charge_status','lease_name','lease_skey','ledger_currency','ledger_name',
+  'legacy_gl','legacy_gl_description','legal_entity','level','level_11','level_code','level_name','level_of_critical_infrastructure',
+  'locality_name','location_alternate_desc','location_code','location_desc','location_id','location_type_description','longitude','major_storm_name_code',
+  'managed_by_cbre_code','managed_by_cbre_f','managed_by_cbre_name','management_unit','market_name','market_skey','mdm_id','metric 01 desc',
+  'metric 01 name','metric 01 value','metric 01 value uom','metric 02 desc','metric 02 name','metric 02 value','metric 02 value uom','metric 03 desc',
+  'metric 03 name','metric 03 value','metric 03 value uom','metric 04 desc','metric 04 name','metric 04 value','metric 04 value uom','metric 05 desc',
+  'metric 05 name','metric 05 value','metric 05 value uom','metric 06 desc','metric 06 name','metric 06 value','metric 06 value uom','metric 07 desc',
+  'metric 07 name','metric 07 value','metric 07 value uom','metric 08 desc','metric 08 name','metric 08 value','metric 08 value uom','metric 09 desc',
+  'metric 09 name','metric 09 value','metric 09 value uom','metric 10 desc','metric 10 name','metric 10 value','metric 10 value uom','metric 11 desc',
+  'metric 11 name','metric 11 value','metric 12 desc','metric 12 name','metric 12 value','metric 13 desc','metric 13 name','metric 13 value',
+  'metric 14 desc','metric 14 name','metric 14 value','metric 15 desc','metric 15 name','metric 15 value','metric 16 desc','metric 16 name',
+  'metric 16 value','metric category','metric description','metric name','metric skey','metric subcategory','metric_01_desc','metric_01_name',
+  'metric_01_value','metric_01_value_uom','metric_02_desc','metric_02_name','metric_02_value','metric_02_value_uom','metric_03_desc','metric_03_name',
+  'metric_03_value','metric_03_value_uom','metric_04_desc','metric_04_name','metric_04_value','metric_04_value_uom','metric_05_desc','metric_05_name',
+  'metric_05_value','metric_05_value_uom','metric_06_desc','metric_06_name','metric_06_value','metric_06_value_uom','metric_07_desc','metric_07_name',
+  'metric_07_value','metric_07_value_uom','metric_08_desc','metric_08_name','metric_08_value','metric_08_value_uom','metric_09_desc','metric_09_name',
+  'metric_09_value','metric_09_value_uom','metric_10_desc','metric_10_name','metric_10_value','metric_10_value_uom','metric_11_desc','metric_11_name',
+  'metric_11_value','metric_12_desc','metric_12_name','metric_12_value','metric_13_desc','metric_13_name','metric_13_value','metric_14_desc',
+  'metric_14_name','metric_14_value','metric_15_desc','metric_15_name','metric_15_value','metric_16_desc','metric_16_name','metric_16_value',
+  'metric_category','metric_desc','metric_name','metric_skey','metric_sub_category','missing actuals','missing boma id','missing plan',
+  'missing size','mod_code_code','modelasset_code','mon & fri average','month','most_recent_upload','ms_id','mydata_property_id_code',
+  'name','name1','name2','name3','new_client_gl','new_gl_description','next year fcst hc (dec)','number_of_floor',
+  'number_of_it_hall','number_of_it_rack','number_of_seat','number_of_workstation','numeric_account_name','object','occupied_seating_capacity','office',
+  'office code','office tier','office_description','operational','ops_manager_name_code','opus_id_code','other_normalization_code','out_of_scope_spend_code',
+  'ovcp_id','overall_building_score','own_lease_other','owned_lease_code','owned_lease_name','owned_or_leased_indicator','parent metric skey','parent_id',
+  'parent_id1','parent_id2','parent_id3','parent_metric_skey','parent_property_skey','party_name','party_number','passthru_code',
+  'period','plan %','planning version','planning_account_nonretail_code','planning_account_nonretail_name','planning_version','pm_area','pm_control_group',
+  'pm_region','pmrl','po_number','po_number_code','postal_code','posted_date','primary_asset_class','primary_portfolio_name',
+  'principal_agency_code','priority_code','priority_level','product','project','project name','project skey','project_code',
+  'project_code_name','project_name','project_name_code','project_skey','properties','property area','property count','property name',
+  'property name (for detail)','property sf','property size','property skey','property status','property sub type','property type','property_address',
+  'property_address_code','property_city','property_desc','property_hierarchy_extended_attribute_skey','property_hierarchy_skey','property_id_in_originating_system','property_lease_owned_f','property_master_id',
+  'property_name','property_note','property_number','property_size','property_size_uom','property_skey','property_skey (com_dim_property_vw)','property_state',
+  'property_status','property_sub_type','property_sub_type (com_dim_property_vw)','property_type','property_type_code','property_type_name','property_unique_id','property_uom',
+  'property_zip_code','province_state_code','province_state_name','quarter','raised_floor_area','raised_floor_area_uom','region','rentable_area',
+  'reporting_code_1','reporting_code_2','reporting_code_3','reporting_code_4','reporting_code_5','reporting_code_6','reporting_code_7','reporting_hierarchy_skey',
+  'responsibility_for_provision_of_property_services','restoration_priority_code','risk_tier_rating','route_assigned_code','row nbr','row_id','row_nbr','rsf',
+  'scope_cat_code','scope_type_code','scope_type_name','secondary_asset_class','service line id','service line name','service_line_id','service_line_name',
+  'short_name','si7_id','site_skey','site_type','size %','snapshot date','snapshot_date','source client name',
+  'source record hash','source system code','source unique id','source_client_name','source_client_name1','source_country_code','source_country_name','source_modified_ts',
+  'source_record_hash','source_system_code','source_unique_id','sourcing_category_code','spend_category_code','spend_category_code1','spend_category_code2','spend_category_name',
+  'spend_category_name1','spend_category_name2','spend_type_code','spendtype','sq__ft','standardization_hash','standardization_precision','standardization_score',
+  'standardized_address_line_1','standardized_address_line_2','standardized_city_name','standardized_country_code','standardized_county','standardized_latitude','standardized_longitude','standardized_state',
+  'standardized_zip_code','state_code','state_province_code','status','status_code','status_name','sub-region','subledger_code',
+  'subledger_name','subledger_worktype_scope_code','submarket_name','submarket_skey','subsidiary','supervisor_skey','supervisor_worker_name','supplier name code',
+  'supplier_code','supplier_id','supplier_name','table name','table_name','tablename','territory_manager_name_code','territory_name_code',
+  'test','tier','time_zone','titude_code','total capacity','total hc','total rentable area','total row count',
+  'total_global_value','total_power_allocated','total_power_allocated_uom','total_rentable_area','total_rentable_area_dim','total_rentable_area_uom','total_row_count_test','total_rsf',
+  'tranche','transaction name','transaction skey','transaction_date','transaction_name','transaction_number','transaction_skey','transaction_type',
+  'transaction_type_code','transaction_type_name','twt utilization %','updated_on','user_defined_field_1','user_defined_field_2','user_defined_field_3','user_defined_field_4',
+  'value','vendor','vendor actuals %','vendor actuals (usd) %','vendor count','vendor name filter','vendor_line_item_desc','vendor_name_nonretail_code',
+  'vendor_number','version','work_order_number','worker_name','worker_role_code','worker_role_desc','worker_skey','worker_status',
+  'worker_type_code','year','year of period','year_of_period','ytd budget variance','ytd title','ytd_title_1','zip',
+  'zip  code','zip_code'
+]),
+    // GL dimension fields common in Finance data models — not genuine customizations
+    metricFilter: /(_code$|_name$|_desc$|_type$|_category$|_group$|_level$|_class$|_dim$)/i,
+    stdWsDash: 8.88,
+    trainingCount: 14,
+    exponent: 0.50,
+  },
+  'savings': {
+    id: 'savings',
+    name: 'Savings / Value Track',
+    desc: 'Calibrated · 12 labeled workbooks',
+    status: 'trained',
+    color: '#0369a1',
+    weights: { entity:65, miss:0, cust:10, metric:14, ws:8, des:3 },
+    bicAreas: [],
+    bicStructural: [
+      'implementation notes','bic version history','data health summary',
+      'sheets for metric alerts do not publish','appendix 1','appendix 2 implementation',
+      'appendix 3 bic version history',
+    ],
+    bicKnown: new Set([
+      // Current BIC standard dashboards
+      'initiative details',
+      'initiative forecast savings timeline',
+      'savings overview',
+      // Common renamed/alias versions seen across workbooks
+      'initiative savings timeline',
+      'initiatives detail list',
+      'savings by site & initiative',
+      'insights',
+      'fy savings overview',
+      'savings tracker',
+      'initiative detail',
+      'monthly savings schedule',
+      'data quality scorecard',
+      'summary',
+      // Structural
+      'implementation notes','bic version history','data health summary',
+      'sheets for metric alerts do not publish','appendix 1','appendix 2 implementation',
+      'appendix 3 bic version history',
+    ]),
+    masterWhitelist: new Set([
+  ':measure names','__tableau_internal_object_id__].[com_dim_property_vw (adidas.com_dim_property_vw)_d99915706e7147b6b7d031b1a913b2d2','actual baseline','actual or forecasted (copy)','actual savings','actual savings (copy 2)_1539105212282425346','actual savings (copy)','actual savings calc',
+  'actual savings py','actual_baseline','actual_gain_share','actual_savings','additionalnotes','address_line1','address_line2','address_standardization_satisfied_f',
+  'alternate_property_id','approval percentage (copy)_1636214077322944534','approval status','approved savings amount (copy)_1636214077211086860','are_support_docs_attached','associated_lease_id','associated_project_number','boma_code',
+  'bu name','bu_allocation','bu_name','bu_reference_number','building_phone_number','calculation_1006273068630904832','calculation_1194016904670015488','calculation_1238208444227538946',
+  'calculation_129478522910883840','calculation_1420885730266558464','calculation_1472958603537260544','calculation_1539105212279468033','calculation_1539105213280747525','calculation_1571193333372637232','calculation_1571193333375410225','calculation_1636214076590346241',
+  'calculation_1636214076594003973','calculation_1636214076848689158','calculation_1636214076870029322','calculation_1636214076874944523','calculation_1636214077270765589','calculation_1724878669904756736','calculation_1776670102312693760','calculation_1791306802982453254',
+  'calculation_2093047986987601921','calculation_2108247588528857088','calculation_2108247588534140929','calculation_2127669382370308096','calculation_2602799173711200257','calculation_2602799173711273986','calculation_3000804765830873093','calculation_3075677092526026753',
+  'calculation_3075677092527554565','calculation_3075677092533735430','calculation_3075677092533870599','calculation_3351522571413250048','calculation_438819508826128384','calculation_939844979398836225','category','cbre_facility_type',
+  'cbre_property_name','cbre_standardized_property_name','cbre_standardized_property_skey','cbre_standardized_property_sub_type_name','cbre_standardized_property_sub_type_skey','cbre_standardized_property_type_name','cbre_standardized_property_type_skey','cbre_standardized_region_name',
+  'cbre_standardized_region_skey','city_name','client','client region','client_additional_attrib','client_additional_attrib (com_dim_property_vw)','client_additional_dataset','client_additional_dataset (com_dim_property_vw)',
+  'client_cost_center_code','client_facility_classification','client_facility_type','client_name','client_property_id','client_property_name','client_provided_baseline','client_reference_id',
+  'client_region','client_skey','client_skey (com_dim_property_vw)','closed_date','commodity type','commodity_type','completeddate','confidence level',
+  'confidence level mulitplier','confidencelevel','confidencelevel (copy)_1390767917971095552','cost_location_name','cost_location_skey','cost_model_name','cost_model_skey','countdinitiative number',
+  'country','country_code','country_name','country_skey','county_name','currency','current area sf parameter','current year',
+  'current year (copy)_1539105213281996806','current_year_prior_year','deferred_maintenance_cost_amount','deferred_maintenance_cost_amount_currency_skey','district_name','edp_create_ts','edp_delete_f','edp_delete_f (com_dim_property_vw)',
+  'edp_last_updated_timestamp','edp_update_by','edp_update_by (com_dim_property_vw)','edp_update_ts','edp_update_ts (com_dim_property_vw)','end_month','end_year','entity_code',
+  'entity_desc','entity_name','entity_skey','entity_type','expense type','expense_type','facility_manager_code','fact_metric_skey',
+  'fm_refs_category','forecased savings no actuals reported','forecasted savings','forecasted savings (copy)_1776670102314545155','forecasted_gain_share','forecasted_gain_share_no_actuals_reported','forecasted_savings','forecasted_savings_no_actuals_reported',
+  'gain_share_forecast_difference','geography_latitude_code','geography_longitude_code','geography_longtitude_code','glaccount','incumbent','initiative comments','initiative description',
+  'initiative managed by','initiative name','initiative number','initiative year number','initiative_comments','initiative_created_by','initiative_created_on','initiative_description',
+  'initiative_managed_by','initiative_name','initiative_number','inserted year','inserted_by','inserted_date','inserted_date (vt_clientsavings_target)','internalstatus',
+  'is_savings_recurring','isconfidential','lease_name','lease_skey','levelofcomplexity','locality_name','location_alternate_desc','location_desc',
+  'location_id','managed_by_cbre_f','managing_agent_principle','market_name','market_skey','metric 01 value (copy)_1271422490699046912','metric_01_desc','metric_01_name',
+  'metric_01_value','metric_01_value_uom','metric_02_desc','metric_02_name','metric_02_value','metric_02_value_uom','metric_03_desc','metric_03_name',
+  'metric_03_value','metric_03_value_uom','metric_04_desc','metric_04_name','metric_04_value','metric_04_value_uom','metric_05_desc','metric_05_name',
+  'metric_05_value','metric_05_value_uom','metric_06_desc','metric_06_name','metric_06_value','metric_06_value_uom','metric_07_desc','metric_07_name',
+  'metric_07_value','metric_07_value_uom','metric_08_desc','metric_08_name','metric_08_value','metric_08_value_uom','metric_09_desc','metric_09_name',
+  'metric_09_value','metric_09_value_uom','metric_10_desc','metric_10_name','metric_10_value','metric_10_value_uom','metric_11_desc','metric_11_name',
+  'metric_11_value','metric_12_desc','metric_12_name','metric_12_value','metric_13_desc','metric_13_name','metric_13_value','metric_14_desc',
+  'metric_14_name','metric_14_value','metric_15_desc','metric_15_name','metric_15_value','metric_16_desc','metric_16_name','metric_16_value',
+  'metric_category','metric_desc','metric_name','metric_skey','metric_sub_category','mondelez_savings_type','month','new_contract',
+  'next action 1 (copy)_2602799173711454211','next action 1 (copy)_2602799173711597573','next action 1 inverse (copy)_2602799173711454212','next action 1 inverse (copy)_2602799173711597574','next best action 1 (copy) (copy)_2618561771997634578','next best action 1 (copy)_2618561771997622289','number of records','number_of_floor',
+  'number_of_it_hall','number_of_it_rack','number_of_seat','number_of_workstation','numberofrecords','org unit name (copy)_1822269029444857862','org unit name / space type (copy)_1617073746704322580','ownership_interest',
+  'parameter 1','parameter 1 (copy)_534802491893170182','parameter 1 (copy)_534802491919294475','parameter 1 1','parameter 1 2','parameter 10','parameter 11','parameter 11 2',
+  'parameter 12','parameter 13','parameter 13 2','parameter 14','parameter 15','parameter 16','parameter 17','parameter 18',
+  'parameter 19','parameter 19 1','parameter 2','parameter 2 1','parameter 2 2','parameter 2 3','parameter 20','parameter 3',
+  'parameter 3 (copy)_993888179264352258','parameter 3 1','parameter 5','parameter 6','parameter 7','parameter 7 1','parameter 8','parameter 9',
+  'parent_metric_skey','parent_property_skey','principal_agency_code','prior year','priority_level','project_name','project_savings_type','project_skey',
+  'projectnumber','property_address_code','property_desc','property_id_in_originating_system','property_lease_owned_f','property_master_id','property_name','property_note',
+  'property_size','property_size_uom','property_skey','property_skey (com_dim_property_vw)','property_status','property_sub_type','property_type','property_unique_id',
+  'property_uom','raised_floor_area','raised_floor_area_uom','region','reporting_code_1','reporting_code_2','reporting_code_3','reporting_code_4',
+  'reporting_code_5','reporting_code_6','reporting_code_7','reporting_hierarchy_skey','row_nbr','running sum (copy)_1872090119551356937','saving date','savings category',
+  'savings month (copy)','savings target','savings type','savings type (copy)','savings_category','savings_end_month','savings_end_year','savings_forecast_difference',
+  'savings_likelihood','savings_start_month','savings_start_year','savings_target','savings_type','scs_category','scs_notes','scs_savings_classification',
+  'scs_status','scsmysourceref','scsmysourcetaxonomyl2','service line','service_line','service_line_id','service_line_name','service_line_name (com_dim_property_vw)',
+  'show top (n) (copy)','site name','site_allocation','site_field1','site_field2','site_name','site_number','site_skey',
+  'site_status','snapshot_date','sort by (copy)','source_account_name','source_client_name','source_client_name (com_dim_property_vw)','source_country_code','source_country_name',
+  'source_modified_ts','source_of_idea','source_record_hash','source_record_hash (com_dim_property_vw)','source_system','source_system_code','source_system_code (com_dim_property_vw)','source_unique_id',
+  'source_unique_id (com_dim_property_vw)','standardization_hash','standardization_precision','standardization_score','standardized_address_line_1','standardized_address_line_2','standardized_city_name','standardized_country_code',
+  'standardized_county','standardized_latitude','standardized_longitude','standardized_state','standardized_zip_code','start_month','start_year','state_province_code',
+  'step_1_internal_approver','step_2_client_approver','step_4_savings_sign_off','sub region','sub_region','submarket_name','submarket_skey','sunburst parameter (copy)_1337006146518208512',
+  'targetbiddate','tco_budget_category','time_zone','today','top n (copy)_2093047987010322434','total savings (copy)','total_power_allocated','total_power_allocated_uom',
+  'total_rentable_area','total_rentable_area_uom','transaction_flag','transaction_name','transaction_skey','user_defined_field_1','user_defined_field_2','user_defined_field_3',
+  'user_defined_field_4','won_contract','workflow status','workflow status (copy)','workflow_status','x axis (copy)_685954558276792321','x axis (copy)_895653412463964167','year',
+  'year (client initiatives)','zip_code'
+]),
+    cbrePalettes: new Set([
+      'cbre chart - graphs','cbre charts and graphs','cbre charts and graphs 50% tints',
+      'cbre red-green 50% diverging','cbre red green gold diverging',
+      'cbre dark green','cbre green','cbre secondary','cbre infographics',
+      'cbre charts and graphs with 50% tints','cbre red yellow green diverging',
+    ]),
+    stdWsDash: 6.0,
+    trainingCount: 12,
+    exponent: 0.50,
+  },
+  'occupancy':      { id:'occupancy',      name:'Occupancy Management',   desc:'Coming soon · awaiting training data', status:'soon', color:'#9a6700', locked:true },
+  'project-mgmt':   { id:'project-mgmt',  name:'Project Management',     desc:'Coming soon · awaiting training data', status:'soon', color:'#9a6700', locked:true },
+  'capital-markets':{ id:'capital-markets',name:'Capital Markets',        desc:'Coming soon · awaiting training data', status:'soon', color:'#9a6700', locked:true },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let standards = {};
+let wbXml = null, wbName = '';
+let pendingStdXml = null, selSlId = null;
+let lastResult = null, expandedF = {}, wOverrides = {};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOCAL STORAGE (replaces window.storage for standalone use)
+// ═══════════════════════════════════════════════════════════════════════════════
+function loadStds() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) standards = JSON.parse(saved);
+  } catch(e) { standards = {}; }
+  renderStdList(); renderStdSel(); renderWSel(); updWarn();
+}
+function saveStds() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(standards)); } catch(e) {}
+}
+function updWarn() {
+  document.getElementById('noStdWarn').style.display = Object.keys(standards).length === 0 ? 'block' : 'none';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE READING
+// ═══════════════════════════════════════════════════════════════════════════════
+async function readXml(file) {
+  if (file.name.toLowerCase().endsWith('.twbx')) {
+    const zip = await JSZip.loadAsync(file);
+    const key = Object.keys(zip.files).find(f => f.endsWith('.twb'));
+    if (!key) throw new Error('No .twb file found inside .twbx');
+    return await zip.files[key].async('string');
+  }
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = e => res(e.target.result);
+    r.onerror = () => rej(new Error('Could not read file'));
+    r.readAsText(file);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// XML PARSER
+// ═══════════════════════════════════════════════════════════════════════════════
+function cleanField(v) {
+  let s = v.toLowerCase().replace(/\]\.\[/g, ' ').replace(/[\[\]]/g, '').trim();
+  // Check for cross-sheet filter actions — these are multi-field composite names
+  // like "ds1 Action (Address Line1,City Name,...)" that would otherwise get
+  // mangled into garbage by the space-split below (last token becomes "name)" etc.)
+  // The datasource prefix (e.g. "ds1 ") means "action (" can appear mid-string,
+  // not just at the very start, so we search rather than anchor to ^.
+  if (/\baction\s*[\(\[]/i.test(s)) return null;
+  s = s.split(' ').pop();
+  s = s.replace(JUNK_RE, '').replace(AGG_RE, '').trim();
+  if (!s || s.length < 2) return null;
+  if (ACT_RE.test(s) || SYS_RE.test(s) || AUTO_RE.test(s)) return null;
+  return s;
+}
+function isFw(f)  { return BIC_FW.test(f) || BIC_SFX.test(f) || TAB_SYS.test(f); }
+function isMet(f, sl) {
+  // Base metric/KPI pattern — common to all SLs
+  if (MET_PAT.test(f)) return true;
+  // SL-specific extended metric filter (e.g. Finance GL dimension fields)
+  if (sl && sl.metricFilter) {
+    return sl.metricFilter.test(f);
+  }
+  return false;
+}
+
+function parseWb(xml) {
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  // Tableau internal ID filter — used throughout parseWb for wsF and wsRefs
+  const COMP_RE = /^(usr:|cnt:|ctd:|pcto:|tmn:|mn:|my:|yr:|diff:|attr:|fcnt:|\(copy\)|\(building\)|\(group\)|\(status\)|\(type\)|\(name\)|values$|names$)/i;
+
+  const dashes = [...doc.querySelectorAll('dashboard')]
+    .map(d => d.getAttribute('name') || '')
+    .filter(n => n && !n.startsWith('__'));
+
+  const wsM = {};
+  for (const ws of doc.querySelectorAll('worksheet')) {
+    const n = ws.getAttribute('name') || '';
+    const m = ws.querySelector('mark');
+    const t = m ? (m.getAttribute('class') || m.getAttribute('type') || '') : '';
+    wsM[n] = ML[t] || t || 'Text/Auto';
+  }
+
+  const wsF = {};
+  for (const ws of doc.querySelectorAll('worksheet')) {
+    const n = ws.getAttribute('name') || '';
+    const flds = new Set();
+    const walk = el => {
+      const tg = (el.tagName || '').toLowerCase();
+      if (['action','filter-action','highlight-action','named-action',
+           'url-action','parameter-action'].includes(tg)) return;
+      for (const a of ['name','field','column']) {
+        const v = el.getAttribute ? (el.getAttribute(a) || '') : '';
+        if (v && v.includes('[')) {
+          const f = cleanField(v);
+          // Apply same COMP_RE filter as wsRefs — exclude Tableau internal IDs
+          if (f && !COMP_RE.test(f)) flds.add(f);
+        }
+      }
+      for (const ch of el.children || []) walk(ch);
+    };
+    walk(ws);
+    wsF[n] = flds;
+  }
+
+  const dT = {};
+  for (const d of doc.querySelectorAll('dashboard')) {
+    const dn = d.getAttribute('name') || '';
+    if (!dn || dn.startsWith('__')) continue;
+    const seen = new Set(), tiles = [];
+    for (const z of d.querySelectorAll('zone')) {
+      const zn = z.getAttribute('name') || '';
+      if (zn && wsM[zn] && !seen.has(zn)) {
+        seen.add(zn);
+        tiles.push({ ws: zn, viz: wsM[zn], fields: wsF[zn] || new Set() });
+      }
+    }
+    // Quick filters (global/dashboard-level filter widgets): <zone type-v2="filter" param="[field]">
+    // These are dashboard-surface filter controls, not tied to any single worksheet's mark card.
+    // They represent a real customization signal — a client can add a filter on a
+    // client-specific field without that field ever touching a shelf.
+    const qfFields = new Set();
+    for (const z of d.querySelectorAll('zone')) {
+      if (z.getAttribute('type-v2') !== 'filter') continue;
+      const param = z.getAttribute('param') || '';
+      if (param && param.includes('[')) {
+        const f = cleanField(param);
+        if (f && !COMP_RE.test(f)) qfFields.add(f);
+      }
+    }
+    if (qfFields.size > 0) {
+      tiles.push({ ws: '(Dashboard quick filters)', viz: 'Filter', fields: qfFields });
+    }
+    dT[dn] = tiles;
+  }
+  // Build local-name -> remote-name map from metadata-records
+  // This is how the Tableau Document API resolves field identities
+  const localToRemote = {};
+  for (const mr of doc.querySelectorAll('metadata-record')) {
+    const localEl  = mr.querySelector('local-name');
+    const remoteEl = mr.querySelector('remote-name');
+    if (localEl?.textContent && remoteEl?.textContent) {
+      const local  = localEl.textContent.toLowerCase().trim();
+      const remote = remoteEl.textContent.toLowerCase().trim();
+      if (remote && !TAB_SYS.test(remote)) localToRemote[local] = remote;
+    }
+  }
+
+  // Collect visible (non-hidden) datasource columns — mirrors Doc API field.hidden
+  // Hidden fields are internal scaffolding (BIC _skey variants, raw rate fields,
+  // unused DB columns). Developers hide them intentionally; they shouldn't affect score.
+  const visibleLocals = new Set();
+  for (const ds of doc.querySelectorAll('datasource')) {
+    for (const col of ds.querySelectorAll('column')) {
+      if (col.getAttribute('hidden') === 'true') continue;  // skip hidden
+      const name = (col.getAttribute('name') || '').toLowerCase();
+      if (name) visibleLocals.add(name);
+    }
+  }
+
+  // Map visible local names to their remote (database) column names
+  const rem = new Set();
+  for (const local of visibleLocals) {
+    const remote = localToRemote[local];
+    if (remote && !TAB_SYS.test(remote)) rem.add(remote);
+  }
+
+
+
+  const pals = new Set(
+    [...doc.querySelectorAll('color-palette')]
+      .map(cp => (cp.getAttribute('name') || '').toLowerCase())
+      .filter(Boolean)
+  );
+
+  const nWs = Object.keys(wsM).length;
+  return { dashes, dT, wsM, wsF, rem, pals, nWs, wsDash: nWs / Math.max(dashes.length, 1) };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCORING ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+function classifyNovel(rem, stdWl, slWl, sl) {
+  // slWl  = SL masterWhitelist (FM fields, Finance fields, etc.) — falls back to MWL
+  // stdWl = fields from the uploaded BIC standard workbook
+  // sl    = service line object for SL-specific metric filters
+  const wl = slWl || MWL;
+  const entity = [], metric = [];
+  for (const f of rem) {
+    // Skip if in any whitelist layer or is a BIC framework field
+    if (wl.has(f) || MWL.has(f) || stdWl.has(f) || isFw(f) || f.length <= 3) continue;
+    // Classify as metric extension or entity/domain field
+    if (isMet(f, sl)) metric.push(f); else entity.push(f);
+  }
+  return { entity: entity.sort(), metric: metric.sort() };
+}
+
+function buildBicSets(sl) {
+  const areas = (sl.bicAreas || []).map(g => new Set(g));
+  // Use sl.bicKnown if provided (Finance SL), otherwise build from bicStructural + bicAreas
+  const allK = sl.bicKnown ? new Set(sl.bicKnown) : new Set(sl.bicStructural || []);
+  areas.forEach(g => g.forEach(n => allK.add(n)));
+  return { areas, allK };
+}
+
+function scoreWb(wb, std, sl) {
+  const W = wOverrides[std.id] || sl.weights;
+  const stdWl = new Set(std.whitelist || []);
+  const { areas, allK } = buildBicSets(sl);
+  const stdWsDash = sl.stdWsDash || std.wsDash || 9.5;
+  const exp = sl.exponent || 0.5;
+
+  const dl = new Set(wb.dashes.map(d => d.toLowerCase()));
+  const covered = areas.filter(g => [...g].some(a => dl.has(a))).length;
+  const missing = areas.filter(g => ![...g].some(a => dl.has(a))).map(g => [...g][0]);
+  const custD = wb.dashes.filter(d => !allK.has(d.toLowerCase()));
+  const slWl = sl.masterWhitelist || null;
+  const slPal = sl.cbrePalettes || CBRE_PAL;
+  const { entity, metric } = classifyNovel(wb.rem, stdWl, slWl, sl);
+  const nonCbre = [...wb.pals].filter(p => !slPal.has(p));
+  const wsLow = Math.max(0, stdWsDash - wb.wsDash) / stdWsDash;
+  const nA = areas.length;  // 0 for SLs with no bicAreas (FM, Finance)
+
+  const fe  = Math.log1p(entity.length) / Math.log1p(50);
+  const fm  = Math.log1p(metric.length) / Math.log1p(50) * 0.3;
+  const fmi = nA > 0 ? missing.length / nA : 0;  // 0 when SL has no bicAreas
+  const fc  = Math.min(custD.length / 5, 1);
+  const fws = Math.min(wsLow, 1);
+  const fd  = Math.min(nonCbre.length / Math.max(wb.pals.size, 1), 1);
+
+  const total = W.entity + W.miss + W.cust + W.metric + W.ws + W.des;
+  const raw = (fe*W.entity + fmi*W.miss + fc*W.cust + fm*W.metric + fws*W.ws + fd*W.des) / total;
+  const score = Math.round((1 + 8 * Math.pow(Math.min(raw, 1), exp)) * 10) / 10;
+
+  const dD = wb.dashes.map(dn => {
+    const tiles = wb.dT[dn] || [];
+    const isBic = allK.has(dn.toLowerCase());
+    const allF = new Set(); tiles.forEach(t => t.fields.forEach(f => allF.add(f)));
+    // Novel fields on this dashboard: active remote fields (in rem) that aren't whitelisted
+    const isNovel = f =>
+      wb.rem.has(f) &&                 // field is actively used (in data source + worksheet)
+      !slWl?.has(f) && !MWL.has(f) && !stdWl.has(f) &&  // not in any whitelist
+      !isFw(f, sl) &&                  // not a framework field
+      !isMet(f, sl) &&                 // not a metric/dimension field
+      f.length > 3;
+    const cF = [...allF].filter(isNovel);
+    // Attribute each novel field to the worksheet(s) it actually appears in,
+    // so the findings panel can show "field X — used in worksheet Y" instead of a flat list
+    const cFByWs = {};
+    for (const t of tiles) {
+      for (const f of t.fields) {
+        if (isNovel(f)) {
+          if (!cFByWs[f]) cFByWs[f] = [];
+          if (!cFByWs[f].includes(t.ws)) cFByWs[f].push(t.ws);
+        }
+      }
+    }
+    const vT = {}; tiles.forEach(t => { vT[t.viz] = (vT[t.viz] || 0) + 1; });
+    return { dn, isBic, tc: tiles.length, af: allF.size, cF: cF.sort(), cFByWs, vT, tiles };
+  });
+
+  return { score, covered, missing, custD, entity, metric, nonCbre, wsLow,
+           fe, fmi, fc, fm, fws, fd, dD, wb, nA, slId: sl.id };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════════════════════════════════════
+function getVerdict(s) {
+  if (s <= 2) return { label:'Automatic BIC build',     sub:'Pure repoint — no customization work needed', cBg:'#d0ede4', cFg:'#00593d', chip:'1–2 Auto' };
+  if (s <= 4) return { label:'Auto with minor changes',  sub:'Small adjustments within BIC delivery',       cBg:'#d5eee5', cFg:'#007a52', chip:'3–4 Auto+' };
+  if (s <= 6) return { label:'Evaluate carefully',       sub:'Review before committing to approach',        cBg:'#fdefc3', cFg:'#9a6700', chip:'5–6 Evaluate' };
+  if (s <= 8) return { label:'Custom build required',    sub:'Dedicated effort needed — plan accordingly',  cBg:'#fddec3', cFg:'#a84800', chip:'7–8 Custom' };
+  return          { label:'Do not use BIC',             sub:'Net-new solution required',                   cBg:'#f8d0d0', cFg:'#9b1c1c', chip:'9–10 New build' };
+}
+
+function renderScore(r, stdName, slName) {
+  const v = getVerdict(r.score);
+  expandedF = {};
+
+  const sigs = [
+    { n:'entity fields',      p:r.fe*100,  v:r.entity.length + ' fields' },
+    ...(r.nA > 0 ? [{ n:'missing BIC areas', p:r.fmi*100, v:r.missing.length + '/' + r.nA }] : []),
+    { n:'custom dashboards',  p:r.fc*100,  v:r.custD.length },
+    { n:'metric extensions',  p:r.fm*100,  v:r.metric.length + ' fields' },
+    { n:'ws density (low)',   p:r.fws*100, v:(r.wb.wsDash || 0).toFixed(1) },
+    { n:'design palette',     p:r.fd*100,  v:r.nonCbre.length + ' non-CBRE' },
+  ].map(s => {
+    const c = s.p < 20 ? 'var(--success)' : s.p < 55 ? 'var(--warn)' : 'var(--danger)';
+    return `<div class="sig-row"><div class="sig-name">${s.n}</div><div class="sig-track"><div class="sig-fill" style="width:${Math.min(s.p,100)}%;background:${c}"></div></div><div class="sig-val" style="color:${c}">${s.v}</div></div>`;
+  }).join('');
+
+  const findings = [];
+  // Only show BIC area coverage finding if this SL tracks content areas (nA > 0)
+  if (r.nA > 0) {
+    if (r.missing.length) findings.push({ ok:false, t:`${r.missing.length} BIC content area(s) missing`, note:'These standard dashboards were not found in the workbook:', items:r.missing.map(m=>({t:m,c:'r'})) });
+    else findings.push({ ok:true, t:'All BIC content areas present', items:[] });
+  }
+  if (r.custD.length) findings.push({ ok:false, t:`${r.custD.length} custom dashboard(s) added beyond standard`, note:'Not found in any known BIC version:', items:r.custD.map(d=>({t:d,c:'a'})) });
+  else findings.push({ ok:true, t:'No custom dashboards added', items:[] });
+  if (r.entity.length) findings.push({ ok:false, t:`${r.entity.length} client-specific field(s) detected`, note:'Remote fields not found in any known BIC build:', items:r.entity.slice(0,12).map(f=>({t:f,c:'r'})) });
+  else findings.push({ ok:true, t:'No client-specific entity fields detected', items:[] });
+  if (r.metric.length) findings.push({ ok:false, t:`${r.metric.length} metric extension(s)`, note:'BIC-style metrics not in standard (lower weight — common add-ons):', items:r.metric.slice(0,8).map(f=>({t:f,c:'a'})) });
+  if (r.nonCbre.length) findings.push({ ok:false, t:`Non-CBRE color palette detected: ${r.nonCbre.join(', ')}`, items:[] });
+  else findings.push({ ok:true, t:'CBRE-standard color palette', items:[] });
+  findings.push({ isDash:true, t:`Per-dashboard breakdown (${r.dD.length} dashboards)` });
+
+  const fH = findings.map((f, i) => {
+    if (f.isDash) {
+      const rows = r.dD.map(d => {
+        const tag = d.isBic ? '<span class="btg">BIC</span>' : '<span class="ctg">Custom</span>';
+        // Each tile as "Worksheet Name · VizType"
+        const tileList = d.tiles.map(t => `${t.ws} · ${t.viz}`).join('<br>') || '—';
+        // Novel fields — show which worksheet each one came from, e.g. "campus (Campus Map)"
+        const cfEntries = d.cF.slice(0,6).map(f => {
+          const wsList = (d.cFByWs[f] || []).join(', ');
+          return wsList ? `${f} <span style="color:var(--muted)">(${wsList})</span>` : f;
+        });
+        const cf = cfEntries.length > 0
+          ? cfEntries.join('<br>') + (d.cF.length > 6 ? `<br>+${d.cF.length-6} more` : '')
+          : '—';
+        return `<tr><td>${d.dn}${tag}</td><td>${d.tc}</td><td style="font-size:9px;line-height:1.6">${tileList}</td><td style="font-size:9px;line-height:1.6">${cf}</td></tr>`;
+      }).join('');
+      return `<div class="fg">
+        <div class="fh cl" onclick="togF(${i})">
+          <div class="fdot" style="background:var(--muted)"></div>
+          <div class="ft">${f.t}</div>
+          <div class="fchev" id="fc-${i}">›</div>
+        </div>
+        <div class="fb" id="fb-${i}">
+          <table class="dt" style="font-size:10px">
+            <thead><tr><th>Dashboard</th><th>Tiles</th><th>Worksheet · Viz type</th><th>Novel fields used</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+    }
+    const dot = f.ok ? 'var(--success)' : 'var(--warn)';
+    const hasD = !f.ok && f.items && f.items.length > 0;
+    const body = hasD ? `<div class="fb" id="fb-${i}"><div class="fnote">${f.note || ''}</div><div class="pills">${f.items.map(it=>`<span class="pill ${it.c}">${it.t}</span>`).join('')}</div></div>` : '';
+    return `<div class="fg">
+      <div class="fh ${hasD ? 'cl' : ''}" ${hasD ? `onclick="togF(${i})"` : ''}>
+        <div class="fdot" style="background:${dot}"></div>
+        <div class="ft">${f.t}</div>
+        ${hasD ? `<div class="fchev" id="fc-${i}">›</div>` : ''}
+      </div>
+      ${body}
+    </div>`;
+  }).join('');
+
+  return `<div class="sw">
+    <div class="score-top">
+      <div class="score-l">
+        <div class="score-badge" style="background:${v.cBg};color:${v.cFg}">
+          <div class="score-num">${r.score}</div>
+          <div class="score-denom">/10</div>
+        </div>
+        <div>
+          <div class="score-verdict">${v.label}<span class="band-chip" style="background:${v.cBg};color:${v.cFg}">${v.chip}</span></div>
+          <div class="score-sub">${v.sub}</div>
+          <div class="score-meta">${wbName} &nbsp;·&nbsp; ${stdName} &nbsp;·&nbsp; ${slName}</div>
+        </div>
+      </div>
+      <button class="exp-btn" id="expBtn" onclick="exportCSV()">📋 Copy CSV to clipboard</button>
+    </div>
+    <div class="score-body">
+      <div class="lbl" style="margin-bottom:12px">Signal breakdown</div>
+      ${sigs}
+      <div class="stats">
+        ${r.nA > 0 ? `<div class="stat"><div class="stat-k">BIC areas covered</div><div class="stat-v">${r.covered}/${r.nA}</div></div>` : ''}
+        <div class="stat"><div class="stat-k">Client-specific fields</div><div class="stat-v">${r.entity.length}</div></div>
+        <div class="stat"><div class="stat-k">WS per dashboard</div><div class="stat-v">${(r.wb.wsDash || 0).toFixed(1)}</div></div>
+        <div class="stat"><div class="stat-k">Custom dashboards</div><div class="stat-v">${r.custD.length}</div></div>
+      </div>
+      <div class="lbl" style="margin-bottom:0">Findings <span style="font-size:10px;font-weight:400;color:var(--muted)">— click to expand</span></div>
+      ${fH}
+    </div>
+  </div>
+  <div class="csv-panel" id="csvPanel">
+    <div class="csv-top">
+      <span class="csv-title">CSV export — paste into Excel or save as .csv</span>
+      <span class="csv-hint">Click textarea → Ctrl/Cmd+A then Ctrl/Cmd+C if button fails</span>
+    </div>
+    <textarea class="csv-ta" id="csvTa" readonly onclick="this.select();this.setSelectionRange(0,99999)"></textarea>
+  </div>`;
+}
+
+function togF(i) {
+  expandedF[i] = !expandedF[i];
+  const b = document.getElementById('fb-'+i);
+  const c = document.getElementById('fc-'+i);
+  if (b) b.className = 'fb' + (expandedF[i] ? ' op' : '');
+  if (c) c.textContent = expandedF[i] ? '˅' : '›';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CSV EXPORT — clipboard with textarea fallback
+// ═══════════════════════════════════════════════════════════════════════════════
+function buildCsv() {
+  if (!lastResult) return '';
+  const stdKey = document.getElementById('stdSel').value;
+  const std = standards[stdKey];
+  const sl = SLS[std?.slId || 'generic'];
+  const rows = [
+    ['Workbook','Standard','Service Line','Score','BIC Areas Covered','Client Fields','Metric Fields','Custom Dashboards','WS per Dashboard'],
+    [wbName, std?.name||'', sl.name, lastResult.score,
+     lastResult.covered+'/'+lastResult.nA, lastResult.entity.length,
+     lastResult.metric.length, lastResult.custD.length,
+     (lastResult.wb.wsDash||0).toFixed(1)],
+    [],
+    ['Dashboard','BIC Status','Tile Count','Worksheet','Viz Type','Novel Fields Used Here'],
+    ...lastResult.dD.flatMap(d => {
+      if (!d.tiles || d.tiles.length === 0) {
+        return [[d.dn, d.isBic ? 'BIC' : 'Custom', d.tc, '—', '—', d.cF.join('; ')]];
+      }
+      return d.tiles.map((t, i) => {
+        // Novel fields actually used ON THIS worksheet (not the dashboard's full list)
+        const novelHere = d.cF.filter(f => (d.cFByWs[f] || []).includes(t.ws));
+        return [
+          i === 0 ? d.dn : '',                    // dashboard name only on first row
+          i === 0 ? (d.isBic ? 'BIC' : 'Custom') : '',
+          i === 0 ? d.tc : '',                    // tile count only on first row
+          t.ws,                                    // worksheet name
+          t.viz,                                   // viz type
+          novelHere.join('; '),                    // novel fields used on THIS worksheet specifically
+        ];
+      });
+    }),
+    [],
+    ['Client-Specific Fields (not in any BIC build)'],
+    ['Field Name'],
+    ...lastResult.entity.map(f => [f]),
+    [],
+    ['Metric Extension Fields'],
+    ['Field Name'],
+    ...lastResult.metric.map(f => [f]),
+    [],
+    ['Missing BIC Content Areas'],
+    ...lastResult.missing.map(m => [m]),
+  ];
+  return rows.map(r => r.map(c => `"${String(c||'').replace(/"/g,'""')}"`).join(',')).join('\r\n');
+}
+
+async function exportCSV() {
+  if (!lastResult) return;
+  const csv = buildCsv();
+  const panel = document.getElementById('csvPanel');
+  const ta = document.getElementById('csvTa');
+  const btn = document.getElementById('expBtn');
+  ta.value = csv;
+  panel.classList.add('open');
+  ta.select();
+  ta.setSelectionRange(0, 99999);
+  // Try clipboard API
+  try {
+    await navigator.clipboard.writeText(csv);
+    btn.classList.add('copied');
+    btn.textContent = '✓ Copied to clipboard!';
+    setTimeout(() => { btn.classList.remove('copied'); btn.textContent = '📋 Copy CSV to clipboard'; }, 3000);
+    return;
+  } catch(e1) {}
+  // Try execCommand fallback
+  try {
+    const ok = document.execCommand('copy');
+    if (ok) {
+      btn.classList.add('copied');
+      btn.textContent = '✓ Copied!';
+      setTimeout(() => { btn.classList.remove('copied'); btn.textContent = '📋 Copy CSV to clipboard'; }, 3000);
+      return;
+    }
+  } catch(e2) {}
+  // Both failed — text is selected, prompt manual copy
+  btn.textContent = '⚠ Text selected — press Ctrl/Cmd+C';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN RUN
+// ═══════════════════════════════════════════════════════════════════════════════
+function runAnalysis() {
+  const stdKey = document.getElementById('stdSel').value;
+  if (!wbXml || !stdKey) return;
+  const std = standards[stdKey];
+  const sl = SLS[std.slId] || SLS['generic'];
+  document.getElementById('resultArea').innerHTML = '<div style="text-align:center;padding:2.5rem;font-size:13px;color:var(--muted);font-family:var(--fm)">Parsing workbook…</div>';
+  setTimeout(() => {
+    let wb;
+    try { wb = parseWb(wbXml); }
+    catch(e) { document.getElementById('resultArea').innerHTML = `<div style="color:var(--danger);font-size:13px;padding:1rem;background:var(--bg2);border-radius:var(--r)"><strong>Parse error:</strong> ${e.message}</div>`; return; }
+    const result = scoreWb(wb, { ...std, whitelist: new Set(std.whitelist || []) }, sl);
+    lastResult = result;
+    expandedF = {};
+    document.getElementById('resultArea').innerHTML = renderScore(result, std.name, sl.name);
+  }, 350);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STANDARDS UI
+// ═══════════════════════════════════════════════════════════════════════════════
+function renderStdSel() {
+  const sel = document.getElementById('stdSel');
+  const keys = Object.keys(standards);
+  sel.innerHTML = keys.length === 0
+    ? '<option value="">— No standards saved yet —</option>'
+    : '<option value="">— Select a standard —</option>' + keys.map(k => {
+        const s = standards[k];
+        const sl = SLS[s.slId] || SLS['generic'];
+        return `<option value="${k}">${s.name} · ${sl.name}</option>`;
+      }).join('');
+  updSlInf();
+  document.getElementById('runBtn').disabled = !(wbXml && sel.value);
+}
+
+function updSlInf() {
+  const k = document.getElementById('stdSel').value;
+  const el = document.getElementById('slInf');
+  if (!k) { el.textContent = ''; return; }
+  const std = standards[k];
+  const sl = SLS[std?.slId] || SLS['generic'];
+  el.innerHTML = `<span style="color:${sl.color};font-weight:600">${sl.name}</span>`
+    + (sl.trainingCount ? ` &nbsp;·&nbsp; <span style="color:var(--success)">${sl.trainingCount} workbooks calibrated</span>` : '');
+}
+
+function renderStdList() {
+  const el = document.getElementById('stdList');
+  const keys = Object.keys(standards);
+  if (!keys.length) {
+    el.innerHTML = '<div class="es">No standards saved yet.<br><small>Select a service line and upload its BIC .twbx above.</small></div>';
+    return;
+  }
+  el.innerHTML = keys.map(k => {
+    const s = standards[k];
+    const sl = SLS[s.slId] || SLS['generic'];
+    return `<div class="stdc">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <div class="stdn">${s.name}</div>
+          <div class="stdm">${(s.whitelist||[]).length} fields &nbsp;·&nbsp; ${(s.dashboards||[]).length} dashboards &nbsp;·&nbsp; ws/dash ${s.wsDash?.toFixed(1)||'?'} &nbsp;·&nbsp; Saved ${s.savedAt||'recently'}</div>
+        </div>
+        <button class="btn btn-sm btn-d" onclick="delStd('${k}')">Remove</button>
+      </div>
+      <span class="std-sl" style="background:color-mix(in srgb,${sl.color} 12%,transparent);color:${sl.color}">${sl.name}</span>
+    </div>`;
+  }).join('');
+}
+
+function delStd(k) {
+  if (!confirm('Remove this standard from the library?')) return;
+  delete standards[k];
+  saveStds();
+  renderStdList(); renderStdSel(); renderWSel(); updWarn();
+}
+
+function renderSlGrid() {
+  document.getElementById('slGrid').innerHTML = Object.values(SLS).map(sl => {
+    const bc = sl.status === 'trained' ? 'tr' : sl.status === 'generic' ? 'gn' : 'sn';
+    const bl = sl.status === 'trained' ? 'Calibrated' : sl.status === 'generic' ? 'Generic' : 'Coming soon';
+    return `<div class="slc ${selSlId === sl.id ? 'sel' : ''} ${sl.locked ? 'lk' : ''}"
+      onclick="${sl.locked ? '' : `selSl('${sl.id}')`}" id="slc-${sl.id}">
+      <span class="slb ${bc}">${bl}</span>
+      <div class="sln">${sl.name}</div>
+      <div class="sld">${sl.desc}</div>
+    </div>`;
+  }).join('');
+}
+
+function selSl(id) {
+  selSlId = id;
+  document.querySelectorAll('.slc').forEach(el => el.classList.remove('sel'));
+  document.getElementById('slc-'+id)?.classList.add('sel');
+  chkSave();
+}
+
+async function saveStandard() {
+  if (!pendingStdXml || !selSlId) return;
+  const sl = SLS[selSlId];
+  const customName = document.getElementById('stdName').value.trim();
+  const name = customName || sl.name;
+  let wb;
+  try { wb = parseWb(pendingStdXml); }
+  catch(e) { alert('Could not parse the BIC standard file: ' + e.message); return; }
+  const key = (name + '-' + selSlId).toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+  standards[key] = {
+    name, slId: selSlId,
+    whitelist: [...wb.rem],
+    dashboards: wb.dashes,
+    wsDash: wb.wsDash,
+    savedAt: new Date().toLocaleDateString(),
+  };
+  saveStds();
+  renderStdList(); renderStdSel(); renderWSel(); updWarn();
+  pendingStdXml = null; selSlId = null;
+  document.getElementById('stdName').value = '';
+  document.getElementById('stdFile').value = '';
+  document.getElementById('stdLbl').textContent = 'Drop BIC standard .twbx here, or click to browse';
+  document.getElementById('stdDrop').classList.remove('done');
+  document.querySelectorAll('.slc').forEach(el => el.classList.remove('sel'));
+  document.getElementById('saveBtn').disabled = true;
+  switchTab('analyze');
+}
+
+function chkSave() {
+  document.getElementById('saveBtn').disabled = !(pendingStdXml && selSlId && !SLS[selSlId]?.locked);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEIGHTS TAB
+// ═══════════════════════════════════════════════════════════════════════════════
+function renderWSel() {
+  const sel = document.getElementById('wStdSel');
+  const keys = Object.keys(standards);
+  sel.innerHTML = keys.length === 0
+    ? '<option value="">— No standards saved yet —</option>'
+    : '<option value="">— Select a standard —</option>' + keys.map(k => {
+        const s = standards[k];
+        const sl = SLS[s.slId] || SLS['generic'];
+        return `<option value="${k}">${s.name} · ${sl.name}</option>`;
+      }).join('');
+}
+
+function renderWPanel(k) {
+  const std = standards[k];
+  const sl = SLS[std?.slId] || SLS['generic'];
+  const W = wOverrides[k] || { ...sl.weights };
+  const WLABELS = {
+    entity: 'Entity/domain fields',
+    miss:   'Missing BIC areas (n/a for FM & Finance)',
+    cust:   'Custom dashboards added',
+    metric: 'Metric extensions',
+    ws:     'WS density (stripped)',
+    des:    'Design palette',
+  };
+  const sliders = ['entity','miss','cust','metric','ws','des'].map(k2 =>
+    `<div class="wr">
+      <div class="wl">${WLABELS[k2]}</div>
+      <input type="range" style="flex:1" id="ww-${k2}-${k}" min="0" max="80" value="${W[k2]}" oninput="updWW('${k}')">
+      <div class="wv" id="wwv-${k2}-${k}">${W[k2]}</div>
+    </div>`
+  ).join('');
+  document.getElementById('wContent').innerHTML =
+    `<div class="ntc ${sl.status === 'trained' ? 'ok' : 'warn'}" style="margin-bottom:14px">
+      ${sl.status === 'trained'
+        ? `<strong>${sl.name}</strong> — calibrated from ${sl.trainingCount} labeled workbooks. Curve exponent: ${sl.exponent}. Accuracy ±1.5 on 80% of test cases.`
+        : `<strong>Generic weights</strong> — not yet calibrated for ${sl.name}. Collect 15–20 labeled workbooks to calibrate.`
+      }
+    </div>
+    ${sliders}
+    <div class="wt" id="wwT-${k}" style="color:var(--muted)">Total: ${Object.values(W).reduce((a,b)=>a+b,0)} / 100</div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn btn-p" style="flex:1" onclick="saveWW('${k}')">Apply weights</button>
+      <button class="btn" onclick="resetWW('${k}')">Reset to defaults</button>
+    </div>`;
+}
+
+function updWW(k) {
+  const ks = ['entity','miss','cust','metric','ws','des'];
+  let total = 0;
+  ks.forEach(k2 => {
+    const v = parseInt(document.getElementById('ww-'+k2+'-'+k).value);
+    total += v;
+    document.getElementById('wwv-'+k2+'-'+k).textContent = v;
+  });
+  const el = document.getElementById('wwT-'+k);
+  el.textContent = 'Total: ' + total + ' / 100';
+  el.style.color = total !== 100 ? 'var(--danger)' : 'var(--muted)';
+}
+
+function saveWW(k) {
+  const ks = ['entity','miss','cust','metric','ws','des'];
+  const v = {}; let total = 0;
+  ks.forEach(k2 => { v[k2] = parseInt(document.getElementById('ww-'+k2+'-'+k).value); total += v[k2]; });
+  if (total !== 100) { alert('Weights must total exactly 100. Current total: ' + total); return; }
+  wOverrides[k] = v;
+  const el = document.getElementById('wwT-'+k);
+  el.textContent = 'Total: 100 ✓';
+  el.style.color = 'var(--success)';
+}
+
+function resetWW(k) { delete wOverrides[k]; renderWPanel(k); }
+
+document.getElementById('wStdSel').addEventListener('change', function() {
+  if (this.value) renderWPanel(this.value);
+  else document.getElementById('wContent').textContent = 'Select a standard above.';
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TABS & DROP ZONES
+// ═══════════════════════════════════════════════════════════════════════════════
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  ['analyze','standards','weights','about'].forEach((n, i) => {
+    if (n === name) {
+      document.querySelectorAll('.tab')[i].classList.add('active');
+      document.getElementById('panel-'+n).classList.add('active');
+    }
+  });
+  if (name === 'standards') renderSlGrid();
+}
+
+function setupDrop(dropId, inputId, onFile) {
+  const dz = document.getElementById(dropId);
+  document.getElementById(inputId).addEventListener('change', async e => {
+    const f = e.target.files[0]; if (f) await onFile(f, dz);
+  });
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+  dz.addEventListener('drop', async e => {
+    e.preventDefault(); dz.classList.remove('over');
+    const f = e.dataTransfer.files[0]; if (f) await onFile(f, dz);
+  });
+}
+
+setupDrop('wbDrop', 'wbIn', async (file, dz) => {
+  try {
+    wbXml = await readXml(file);
+    wbName = file.name;
+    dz.classList.add('done');
+    document.getElementById('wbLbl').innerHTML = '<span class="dd">✓ ' + file.name + '</span>';
+    document.getElementById('runBtn').disabled = !(wbXml && document.getElementById('stdSel').value);
+  } catch(e) {
+    document.getElementById('wbLbl').textContent = 'Error reading file: ' + e.message;
+  }
+});
+
+setupDrop('stdDrop', 'stdFile', async (file, dz) => {
+  try {
+    pendingStdXml = await readXml(file);
+    dz.classList.add('done');
+    document.getElementById('stdLbl').innerHTML = '<span class="dd">✓ ' + file.name + '</span>';
+    chkSave();
+  } catch(e) {
+    document.getElementById('stdLbl').textContent = 'Error reading file: ' + e.message;
+  }
+});
+
+document.getElementById('stdName').addEventListener('input', chkSave);
+document.getElementById('stdSel').addEventListener('change', () => {
+  document.getElementById('runBtn').disabled = !(wbXml && document.getElementById('stdSel').value);
+  updSlInf();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════════════════════
+loadStds();
+</script>
+</body>
+</html>
