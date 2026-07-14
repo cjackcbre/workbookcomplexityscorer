@@ -222,7 +222,7 @@ select:focus, input[type=text]:focus { outline: none; border-color: var(--accent
       <div class="app-sub">Tableau BIC customization assessment · migration triage</div>
     </div>
   </div>
-  <span class="version-badge">v2.3 · Lease Admin · FM · Finance calibrated</span>
+  <span class="version-badge">v2.3 · Lease Admin · FM · Finance · Savings calibrated</span>
 </div>
 
 <!-- Tabs -->
@@ -360,6 +360,7 @@ select:focus, input[type=text]:focus { outline: none; border-color: var(--accent
       <strong style="color:var(--text)">Lease Admin / Portfolio Intelligence</strong> — calibrated from 17 labeled workbooks. Accuracy ±1.5 on 80% of test cases.<br>
       <strong style="color:var(--text)">Facilities Management</strong> — calibrated from 17 labeled workbooks. Accuracy ±1.5 on 88% of test cases.<br>
       <strong style="color:var(--text)">Financial Analysis</strong> — calibrated · 14 labeled workbooks<br>
+      <strong style="color:var(--text)">Savings / Value Track</strong> — calibrated · 12 labeled workbooks<br>
       <strong style="color:var(--text)">Occupancy, Project Mgmt, Capital Markets</strong> — coming soon.
     </div>
 
@@ -513,7 +514,7 @@ const MWL = new Set([
 // after running calibration with labeled workbooks.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const STORAGE_KEY = 'bic-scorer-v23';
+const STORAGE_KEY = 'bic-scorer-v23s';
 const CBRE_PAL = new Set([
   'cbre chart - graphs','cbre dark green','cbre green','cbre charts and graphs',
   'cbre charts and graphs with 50% tints','cbre red green gold diverging',
@@ -919,6 +920,107 @@ const SLS = {
     metricFilter: /(_code$|_name$|_desc$|_type$|_category$|_group$|_level$|_class$|_dim$)/i,
     stdWsDash: 8.88,
     trainingCount: 14,
+    exponent: 0.50,
+  },
+  'savings': {
+    id: 'savings',
+    name: 'Savings / Value Track',
+    desc: 'Calibrated · 12 labeled workbooks',
+    status: 'trained',
+    color: '#0369a1',
+    weights: { entity:65, miss:0, cust:10, metric:14, ws:8, des:3 },
+    bicAreas: [],
+    bicStructural: [
+      'implementation notes','bic version history','data health summary',
+      'sheets for metric alerts do not publish','appendix 1','appendix 2 implementation',
+      'appendix 3 bic version history',
+    ],
+    bicKnown: new Set([
+      // Current BIC standard dashboards
+      'initiative details',
+      'initiative forecast savings timeline',
+      'savings overview',
+      // Common renamed/alias versions seen across workbooks
+      'initiative savings timeline',
+      'initiatives detail list',
+      'savings by site & initiative',
+      'insights',
+      'fy savings overview',
+      'savings tracker',
+      'initiative detail',
+      'monthly savings schedule',
+      'data quality scorecard',
+      'summary',
+      // Structural
+      'implementation notes','bic version history','data health summary',
+      'sheets for metric alerts do not publish','appendix 1','appendix 2 implementation',
+      'appendix 3 bic version history',
+    ]),
+    masterWhitelist: new Set([
+  ':measure names','__tableau_internal_object_id__].[com_dim_property_vw (adidas.com_dim_property_vw)_d99915706e7147b6b7d031b1a913b2d2','actual baseline','actual or forecasted (copy)','actual savings','actual savings (copy 2)_1539105212282425346','actual savings (copy)','actual savings calc',
+  'actual savings py','actual_baseline','actual_gain_share','actual_savings','additionalnotes','address_line1','address_line2','address_standardization_satisfied_f',
+  'alternate_property_id','approval percentage (copy)_1636214077322944534','approval status','approved savings amount (copy)_1636214077211086860','are_support_docs_attached','associated_lease_id','associated_project_number','boma_code',
+  'bu name','bu_allocation','bu_name','bu_reference_number','building_phone_number','calculation_1006273068630904832','calculation_1194016904670015488','calculation_1238208444227538946',
+  'calculation_129478522910883840','calculation_1420885730266558464','calculation_1472958603537260544','calculation_1539105212279468033','calculation_1539105213280747525','calculation_1571193333372637232','calculation_1571193333375410225','calculation_1636214076590346241',
+  'calculation_1636214076594003973','calculation_1636214076848689158','calculation_1636214076870029322','calculation_1636214076874944523','calculation_1636214077270765589','calculation_1724878669904756736','calculation_1776670102312693760','calculation_1791306802982453254',
+  'calculation_2093047986987601921','calculation_2108247588528857088','calculation_2108247588534140929','calculation_2127669382370308096','calculation_2602799173711200257','calculation_2602799173711273986','calculation_3000804765830873093','calculation_3075677092526026753',
+  'calculation_3075677092527554565','calculation_3075677092533735430','calculation_3075677092533870599','calculation_3351522571413250048','calculation_438819508826128384','calculation_939844979398836225','category','cbre_facility_type',
+  'cbre_property_name','cbre_standardized_property_name','cbre_standardized_property_skey','cbre_standardized_property_sub_type_name','cbre_standardized_property_sub_type_skey','cbre_standardized_property_type_name','cbre_standardized_property_type_skey','cbre_standardized_region_name',
+  'cbre_standardized_region_skey','city_name','client','client region','client_additional_attrib','client_additional_attrib (com_dim_property_vw)','client_additional_dataset','client_additional_dataset (com_dim_property_vw)',
+  'client_cost_center_code','client_facility_classification','client_facility_type','client_name','client_property_id','client_property_name','client_provided_baseline','client_reference_id',
+  'client_region','client_skey','client_skey (com_dim_property_vw)','closed_date','commodity type','commodity_type','completeddate','confidence level',
+  'confidence level mulitplier','confidencelevel','confidencelevel (copy)_1390767917971095552','cost_location_name','cost_location_skey','cost_model_name','cost_model_skey','countdinitiative number',
+  'country','country_code','country_name','country_skey','county_name','currency','current area sf parameter','current year',
+  'current year (copy)_1539105213281996806','current_year_prior_year','deferred_maintenance_cost_amount','deferred_maintenance_cost_amount_currency_skey','district_name','edp_create_ts','edp_delete_f','edp_delete_f (com_dim_property_vw)',
+  'edp_last_updated_timestamp','edp_update_by','edp_update_by (com_dim_property_vw)','edp_update_ts','edp_update_ts (com_dim_property_vw)','end_month','end_year','entity_code',
+  'entity_desc','entity_name','entity_skey','entity_type','expense type','expense_type','facility_manager_code','fact_metric_skey',
+  'fm_refs_category','forecased savings no actuals reported','forecasted savings','forecasted savings (copy)_1776670102314545155','forecasted_gain_share','forecasted_gain_share_no_actuals_reported','forecasted_savings','forecasted_savings_no_actuals_reported',
+  'gain_share_forecast_difference','geography_latitude_code','geography_longitude_code','geography_longtitude_code','glaccount','incumbent','initiative comments','initiative description',
+  'initiative managed by','initiative name','initiative number','initiative year number','initiative_comments','initiative_created_by','initiative_created_on','initiative_description',
+  'initiative_managed_by','initiative_name','initiative_number','inserted year','inserted_by','inserted_date','inserted_date (vt_clientsavings_target)','internalstatus',
+  'is_savings_recurring','isconfidential','lease_name','lease_skey','levelofcomplexity','locality_name','location_alternate_desc','location_desc',
+  'location_id','managed_by_cbre_f','managing_agent_principle','market_name','market_skey','metric 01 value (copy)_1271422490699046912','metric_01_desc','metric_01_name',
+  'metric_01_value','metric_01_value_uom','metric_02_desc','metric_02_name','metric_02_value','metric_02_value_uom','metric_03_desc','metric_03_name',
+  'metric_03_value','metric_03_value_uom','metric_04_desc','metric_04_name','metric_04_value','metric_04_value_uom','metric_05_desc','metric_05_name',
+  'metric_05_value','metric_05_value_uom','metric_06_desc','metric_06_name','metric_06_value','metric_06_value_uom','metric_07_desc','metric_07_name',
+  'metric_07_value','metric_07_value_uom','metric_08_desc','metric_08_name','metric_08_value','metric_08_value_uom','metric_09_desc','metric_09_name',
+  'metric_09_value','metric_09_value_uom','metric_10_desc','metric_10_name','metric_10_value','metric_10_value_uom','metric_11_desc','metric_11_name',
+  'metric_11_value','metric_12_desc','metric_12_name','metric_12_value','metric_13_desc','metric_13_name','metric_13_value','metric_14_desc',
+  'metric_14_name','metric_14_value','metric_15_desc','metric_15_name','metric_15_value','metric_16_desc','metric_16_name','metric_16_value',
+  'metric_category','metric_desc','metric_name','metric_skey','metric_sub_category','mondelez_savings_type','month','new_contract',
+  'next action 1 (copy)_2602799173711454211','next action 1 (copy)_2602799173711597573','next action 1 inverse (copy)_2602799173711454212','next action 1 inverse (copy)_2602799173711597574','next best action 1 (copy) (copy)_2618561771997634578','next best action 1 (copy)_2618561771997622289','number of records','number_of_floor',
+  'number_of_it_hall','number_of_it_rack','number_of_seat','number_of_workstation','numberofrecords','org unit name (copy)_1822269029444857862','org unit name / space type (copy)_1617073746704322580','ownership_interest',
+  'parameter 1','parameter 1 (copy)_534802491893170182','parameter 1 (copy)_534802491919294475','parameter 1 1','parameter 1 2','parameter 10','parameter 11','parameter 11 2',
+  'parameter 12','parameter 13','parameter 13 2','parameter 14','parameter 15','parameter 16','parameter 17','parameter 18',
+  'parameter 19','parameter 19 1','parameter 2','parameter 2 1','parameter 2 2','parameter 2 3','parameter 20','parameter 3',
+  'parameter 3 (copy)_993888179264352258','parameter 3 1','parameter 5','parameter 6','parameter 7','parameter 7 1','parameter 8','parameter 9',
+  'parent_metric_skey','parent_property_skey','principal_agency_code','prior year','priority_level','project_name','project_savings_type','project_skey',
+  'projectnumber','property_address_code','property_desc','property_id_in_originating_system','property_lease_owned_f','property_master_id','property_name','property_note',
+  'property_size','property_size_uom','property_skey','property_skey (com_dim_property_vw)','property_status','property_sub_type','property_type','property_unique_id',
+  'property_uom','raised_floor_area','raised_floor_area_uom','region','reporting_code_1','reporting_code_2','reporting_code_3','reporting_code_4',
+  'reporting_code_5','reporting_code_6','reporting_code_7','reporting_hierarchy_skey','row_nbr','running sum (copy)_1872090119551356937','saving date','savings category',
+  'savings month (copy)','savings target','savings type','savings type (copy)','savings_category','savings_end_month','savings_end_year','savings_forecast_difference',
+  'savings_likelihood','savings_start_month','savings_start_year','savings_target','savings_type','scs_category','scs_notes','scs_savings_classification',
+  'scs_status','scsmysourceref','scsmysourcetaxonomyl2','service line','service_line','service_line_id','service_line_name','service_line_name (com_dim_property_vw)',
+  'show top (n) (copy)','site name','site_allocation','site_field1','site_field2','site_name','site_number','site_skey',
+  'site_status','snapshot_date','sort by (copy)','source_account_name','source_client_name','source_client_name (com_dim_property_vw)','source_country_code','source_country_name',
+  'source_modified_ts','source_of_idea','source_record_hash','source_record_hash (com_dim_property_vw)','source_system','source_system_code','source_system_code (com_dim_property_vw)','source_unique_id',
+  'source_unique_id (com_dim_property_vw)','standardization_hash','standardization_precision','standardization_score','standardized_address_line_1','standardized_address_line_2','standardized_city_name','standardized_country_code',
+  'standardized_county','standardized_latitude','standardized_longitude','standardized_state','standardized_zip_code','start_month','start_year','state_province_code',
+  'step_1_internal_approver','step_2_client_approver','step_4_savings_sign_off','sub region','sub_region','submarket_name','submarket_skey','sunburst parameter (copy)_1337006146518208512',
+  'targetbiddate','tco_budget_category','time_zone','today','top n (copy)_2093047987010322434','total savings (copy)','total_power_allocated','total_power_allocated_uom',
+  'total_rentable_area','total_rentable_area_uom','transaction_flag','transaction_name','transaction_skey','user_defined_field_1','user_defined_field_2','user_defined_field_3',
+  'user_defined_field_4','won_contract','workflow status','workflow status (copy)','workflow_status','x axis (copy)_685954558276792321','x axis (copy)_895653412463964167','year',
+  'year (client initiatives)','zip_code'
+]),
+    cbrePalettes: new Set([
+      'cbre chart - graphs','cbre charts and graphs','cbre charts and graphs 50% tints',
+      'cbre red-green 50% diverging','cbre red green gold diverging',
+      'cbre dark green','cbre green','cbre secondary','cbre infographics',
+      'cbre charts and graphs with 50% tints','cbre red yellow green diverging',
+    ]),
+    stdWsDash: 6.0,
+    trainingCount: 12,
     exponent: 0.50,
   },
   'occupancy':      { id:'occupancy',      name:'Occupancy Management',   desc:'Coming soon · awaiting training data', status:'soon', color:'#9a6700', locked:true },
@@ -1617,7 +1719,7 @@ document.getElementById('wStdSel').addEventListener('change', function() {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// TABS & DROP ZONES 
+// TABS & DROP ZONES
 // ═══════════════════════════════════════════════════════════════════════════════
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1674,7 +1776,7 @@ document.getElementById('stdSel').addEventListener('change', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// INIT 
+// INIT
 // ═══════════════════════════════════════════════════════════════════════════════
 loadStds();
 </script>
